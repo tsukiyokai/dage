@@ -1,0 +1,269 @@
+# planck.yaml — Planck v0.1 Phase A implementation workflow
+# Builds: Rust Plan Compiler + PyO3 bindings (no Ascend hardware needed)
+# Ref: docs/plans/2026-03-19-planck-design.md
+#      docs/plans/2026-03-19-planck-v01-implementation.md
+
+defaults:
+  type: claude
+  max_runs: 5
+  timeout: 30m
+
+vars:
+  repo_dir: /Users/shanshan/repo/_me/planck
+
+nodes:
+  # ---- Layer 0: context gathering (parallel) ----
+  read_design:
+    role: context
+    prompt: |
+      Read docs/plans/2026-03-19-planck-design.md thoroughly.
+      Summarize: three-layer competitive advantage, system architecture
+      (Rust Plan Compiler + C++ Custom Ops + dual delivery channels),
+      Plan IR (3-layer: CommGraph -> LogicalPlan -> ExecutionPlan),
+      9 primitive instructions (Put/Signal/Wait + fused variants),
+      6 compiler optimization passes, and v0.1 scope.
+      Write the full summary to notes.
+
+  read_plan:
+    role: context
+    prompt: |
+      Read docs/plans/2026-03-19-planck-v01-implementation.md thoroughly.
+      Summarize: 7 chunks, file structure, dependency map, and for each task:
+      key types/structs, test specifications, and implementation requirements.
+      Focus on Chunks 1-5 (Phase A, Rust + Python).
+      Write the full summary to notes.
+
+  scan_repo:
+    role: context
+    type: shell
+    cmd: >
+      cd ${vars.repo_dir} &&
+      echo "=== git status ===" && git status --short &&
+      echo "=== file tree ===" && find . -not -path './.git/*' -not -path './target/*' -type f | head -80 &&
+      echo "=== Cargo.toml ===" && cat Cargo.toml 2>/dev/null || echo "(not found)" &&
+      echo "=== cargo test ===" && cargo test 2>&1 | tail -20 || echo "(cargo test failed or not configured)"
+
+  # ---- Layer 1: project skeleton ----
+  scaffold:
+    deps: [read_design, read_plan, scan_repo]
+    max_runs: 8
+    prompt: |
+      Implement Chunk 1 from the implementation plan: project skeleton.
+
+      Design context:
+      ${nodes.read_design.output}
+
+      Implementation plan:
+      ${nodes.read_plan.output}
+
+      Current repo state:
+      ${nodes.scan_repo.output}
+
+      Tasks:
+      1. Cargo workspace (root Cargo.toml, rust-toolchain.toml)
+      2. planck-core crate with empty module files (plan/topo/cost/algo/sched/template)
+      3. planck-python crate skeleton (PyO3)
+      4. pyproject.toml (maturin)
+      5. Verify: `cargo build` succeeds with zero warnings
+
+  gate_build:
+    role: gate
+    deps: [scaffold]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && cargo build 2>&1"
+
+  # ---- Layer 2: Plan IR + Topology + Cost Model ----
+  impl_ir:
+    deps: [gate_build]
+    max_runs: 10
+    timeout: 45m
+    prompt: |
+      Implement plan.rs — Plan IR types with C-compatible serialization.
+
+      Design: ${nodes.read_design.output}
+      Plan: ${nodes.read_plan.output}
+
+      Key types (all repr(C)):
+      - PlanHeader (32 bytes): magic/version/num_ops/num_buffers/num_streams/num_events/num_ranks/my_rank/flags
+      - BufEntry (12 bytes): pool/offset/size
+      - OpEntry (16 bytes): opcode/stream_id/reduce_op/flags/src_buf/dst_buf/dst_rank/wait_event/signal_event
+      - Opcode enum: Put/Signal/Wait/LocalCopy/LocalReduce + 3 fused + Noop
+      - ExecutionPlan: header + Vec<BufEntry> + Vec<OpEntry> + serialize/deserialize
+
+      TDD: write tests first (size assertions, magic, roundtrip), then implement.
+
+  impl_topo:
+    deps: [gate_build]
+    max_runs: 8
+    prompt: |
+      Implement topo.rs — 8-card HCCS topology.
+
+      Plan: ${nodes.read_plan.output}
+
+      Key types: Link {src, dst, bandwidth_gbps, latency_us, transport}, Topology {num_ranks, links}
+      Methods: Topology::hccs_8card() (56 directed links, all-to-all, ~30 GB/s, ~1.5us)
+               has_link(), get_link(), ring_order() -> [0,1,...,7]
+
+      TDD: write 3 tests (basics, ring neighbors, link properties), then implement.
+
+  gate_ir_topo:
+    role: gate
+    deps: [impl_ir, impl_topo]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- plan topo 2>&1"
+
+  impl_cost:
+    deps: [gate_ir_topo]
+    max_runs: 8
+    prompt: |
+      Implement cost.rs — alpha-beta-gamma cost model.
+
+      Plan: ${nodes.read_plan.output}
+
+      CostModel {alpha_us, beta_us_per_byte, gamma_us_per_byte}
+      - from_topology(): extract alpha from link latency, beta from 1/bandwidth
+      - ring_allreduce(msg_size, num_ranks): T = 2(n-1)*alpha + 2(n-1)/n*M*beta + (n-1)/n*M*gamma
+
+      TDD: 3 tests (from_topology, scales_with_size, exact formula check).
+
+  gate_cost:
+    role: gate
+    deps: [impl_cost]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- cost 2>&1"
+
+  # ---- Layer 3: Algorithm + Scheduler + Fusion ----
+  impl_algo:
+    deps: [gate_cost]
+    max_runs: 10
+    timeout: 45m
+    prompt: |
+      Implement algo.rs — Ring AllReduce algorithm decomposition.
+
+      Plan: ${nodes.read_plan.output}
+
+      ring_allreduce(num_ranks, my_rank) -> Vec<AlgoStep>
+      AlgoStep {phase: RS|AG, step, send_chunk, recv_chunk, dst_rank, src_rank, needs_reduce}
+
+      Ring formulas:
+      - RS step k: send chunk (rank-k+n)%n, recv chunk (rank-k-1+n)%n
+      - AG step k: send chunk (rank-k+1+n)%n, recv chunk (rank-k+n)%n
+      - dst = (rank+1)%n, src = (rank-1+n)%n
+
+      TDD: 4 tests (step count, send/recv ranks, chunk indices, all chunks covered).
+
+  impl_sched:
+    deps: [impl_algo]
+    max_runs: 10
+    timeout: 45m
+    prompt: |
+      Implement sched.rs — Pipeline scheduler with double-buffered receive.
+
+      Plan: ${nodes.read_plan.output}
+
+      schedule(steps, msg_size, pipeline_chunks) -> ScheduleResult {ops, buffers, num_streams}
+
+      Per pipeline chunk c (stream c), per AlgoStep:
+        RS -> Put(send) + Signal(dst) + Wait(src) + LocalReduce(recv->accum)
+        AG -> Put(send) + Signal(dst) + Wait(src) + LocalCopy(recv->output)
+
+      Buffer layout: Input (user tensor), Scratch (2 per chunk, double-buffered, size=msg/(chunks*ranks))
+      stream_id = pipeline_chunk_index
+
+      TDD: 4 tests (produces_ops, uses_c_streams, buffer_sizes, op_sequence_per_stream).
+
+  impl_fusion:
+    deps: [impl_sched]
+    max_runs: 10
+    timeout: 45m
+    prompt: |
+      Add to plan.rs: instruction fusion pass and top-level compile() function.
+
+      Plan: ${nodes.read_plan.output}
+
+      fuse(ops) -> fused ops. Patterns (greedy, longest first):
+      - Wait + LocalReduce + Put -> WaitReducePut
+      - Wait + LocalReduce + LocalCopy -> WaitReduceCopy
+      - Put + Signal -> PutWithSignal
+
+      compile(CompileRequest, Topology) -> ExecutionPlan
+      Pipeline: topo -> cost -> algo -> sched -> fuse -> build ExecutionPlan
+
+      TDD: 4 tests (fusion patterns, preserves_unfusable, compile_produces_valid_plan).
+
+  gate_compiler:
+    role: gate
+    deps: [impl_fusion]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && cargo test -p planck-core 2>&1"
+
+  # ---- Layer 4: Template + Simulation ----
+  impl_template:
+    deps: [gate_compiler]
+    max_runs: 10
+    timeout: 45m
+    prompt: |
+      Implement Chunk 4: template.rs + end-to-end simulation test.
+
+      Plan: ${nodes.read_plan.output}
+
+      1. PlanTemplate: freeze instruction graph, parameterize buffer sizes.
+         from_plan(plan, slots) / instantiate(params) -> ExecutionPlan
+         Must be sub-microsecond instantiation.
+
+      2. Simulation test in plan.rs: compile plans for all 8 ranks,
+         simulate Ring AllReduce on test data (rank r has [r+1, r+1, ...]),
+         verify all ranks produce [36.0, ...] (sum of 1..8).
+
+      3. Criterion benchmarks: compile <1ms, instantiate <1us.
+
+  gate_simulation:
+    role: gate
+    deps: [impl_template]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- simulate 2>&1"
+
+  # ---- Layer 5: PyO3 bindings ----
+  impl_pyo3:
+    deps: [gate_simulation]
+    max_runs: 10
+    timeout: 45m
+    prompt: |
+      Implement Chunk 5: PyO3 bindings.
+
+      Plan: ${nodes.read_plan.output}
+
+      planck-python/src/lib.rs:
+      - PlanCompiler: hccs_8card(), compile_allreduce(), compile_template()
+      - PlanCache: get_allreduce() with HashMap cache
+      - PyPlanView: num_ranks/my_rank/num_ops/num_buffers/to_bytes()
+      - Release GIL during compilation: py.allow_threads(|| ...)
+
+      python/planck/__init__.py: re-export PlanCompiler, PlanCache
+      tests/test_plan_compile.py: import, compile, cache, template tests
+
+      Build: maturin develop, then pytest.
+
+  gate_python:
+    role: gate
+    deps: [impl_pyo3]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && maturin develop 2>&1 && pytest tests/test_plan_compile.py -v 2>&1"
+
+  # ---- Layer 6: report ----
+  report:
+    role: meta
+    deps: [gate_python]
+    prompt: |
+      Write a summary report of Planck v0.1 Phase A implementation.
+
+      Results:
+      - Skeleton: ${nodes.gate_build.status}
+      - IR + Topo: ${nodes.gate_ir_topo.status}
+      - Cost model: ${nodes.gate_cost.status}
+      - Compiler (algo+sched+fusion): ${nodes.gate_compiler.status}
+      - Simulation: ${nodes.gate_simulation.status}
+      - PyO3 bindings: ${nodes.gate_python.status}
+
+      Include: what was implemented, test results, compile benchmark numbers,
+      any issues encountered, and readiness for Phase B (C++ on Ascend hardware).

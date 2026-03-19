@@ -593,27 +593,74 @@ _PLAN_PROMPT = """\
 You are a workflow planner for dage, a DAG-based workflow orchestrator.
 Turn the task description into a valid dage YAML workflow.
 
+How dage works:
+- Each `claude` node spawns an AI agent session (via ccx, a Claude Code wrapper).
+  The agent can read/write files, run commands, and reason about code.
+  Its prompt should be a complete task instruction, not a chat question.
+  Output is written to a notes file, accessible downstream via ${nodes.NAME.output}.
+- Each `shell` node runs a command. Use for: git, test, build, lint, benchmarks.
+- Nodes in the same layer (no mutual deps) run in parallel automatically.
+- A `gate` node that fails skips ALL its downstream nodes (short-circuit).
+
 Schema:
   nodes:
     <name>:                         # snake_case
-      type: shell | claude          # shell=command, claude=AI reasoning
-      role: produce|context|gate|evaluate|gc  # gate failure blocks downstream
+      type: shell | claude          # default: claude
+      role: produce|context|gate|evaluate|gc|meta
       deps: [a, b]                  # data/order dependencies
-      cmd: "..."                    # shell nodes
-      prompt: "..."                 # claude nodes, supports interpolation
+      cmd: "..."                    # required for shell
+      prompt: |                     # required for claude (use block scalar)
+        Task instruction for the AI agent...
       condition: "expr"             # skip if false
       retry: N                      # optional retry count
       timeout: "30m"                # e.g. 1h, 5m, 30s
+      max_runs: 5                   # claude only: max tool-use iterations
   vars:
-    key: value                      # global vars
+    key: value
 
 Interpolation: ${vars.KEY}, ${nodes.NAME.output}, ${nodes.NAME.status}
+
+Example — performance optimization pipeline:
+  nodes:
+    scan:
+      role: context
+      prompt: |
+        Scan the codebase. Summarize structure, key modules, and test coverage.
+    read_bench:
+      role: context
+      prompt: |
+        Find all benchmarks. Document names, what they measure, baseline numbers.
+    plan:
+      deps: [scan, read_bench]
+      prompt: |
+        Based on: ${nodes.scan.output}
+        And benchmarks: ${nodes.read_bench.output}
+        Create a prioritized optimization plan.
+    implement:
+      deps: [plan]
+      max_runs: 10
+      timeout: 1h
+      prompt: |
+        Implement the top optimization from: ${nodes.plan.output}
+        Make minimal focused changes. Ensure code compiles.
+    test:
+      role: gate
+      deps: [implement]
+      type: shell
+      cmd: "make test"
+    report:
+      deps: [test]
+      role: meta
+      prompt: |
+        Summarize: what changed, test=${nodes.test.status},
+        benchmark=${nodes.benchmark.output}. Include next steps.
 
 Rules:
 - deps only when B needs A's output or A must succeed first
 - maximize parallelism: independent tasks have no deps between them
-- gate role for checks that must pass (tests, lint, validation)
-- shell for deterministic commands, claude for reasoning/analysis
+- gate for checks that must pass before continuing (test, lint, validation)
+- claude prompts: complete task instructions, not questions. Use block scalar (|)
+- thread data between nodes with ${nodes.NAME.output} in prompts
 - short descriptive snake_case node names
 
 Output ONLY valid YAML. No fences, no commentary.
