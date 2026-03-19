@@ -684,22 +684,64 @@ Output ONLY valid YAML. No fences, no commentary.
 Task: """
 
 
-def generate_plan(description: str) -> str:
-    """Call claude CLI to generate a workflow YAML from description."""
-    prompt = _PLAN_PROMPT + description
+_BRAINSTORM_PROMPT = """\
+You are a workflow architect. Analyze the task and design a DAG execution plan.
+Think step by step, making all decisions autonomously.
+
+1. DECOMPOSE: Break the task into concrete subtasks.
+2. CLASSIFY each subtask:
+   - claude (AI reasoning/analysis/coding) or shell (deterministic command)?
+   - role: context (gather info), produce (create artifacts), gate (verify), meta (report)?
+3. DEPENDENCIES: Which subtasks need outputs from others? Be precise — only add
+   a dependency when subtask B actually reads subtask A's output.
+4. PARALLELISM: Which subtasks are independent? Maximize concurrent execution.
+5. GATES: After every implementation/coding subtask, add a shell verification
+   step (test/build/lint) as a gate. Gate failure blocks all downstream work.
+6. RESOURCE ESTIMATE: For each claude subtask, estimate complexity:
+   - Light (reading/summarizing): max_runs 5, timeout 30m
+   - Medium (analysis/planning): max_runs 8, timeout 30m
+   - Heavy (implementation/coding): max_runs 10+, timeout 45m-1h
+
+Output a structured design document. Be specific about what each subtask does,
+what it reads as input, and what it produces as output.
+
+Task: """
+
+
+def _call_claude(prompt: str, timeout: int = 120) -> str:
+    """Call claude CLI with a prompt, return stdout text."""
     try:
         proc = subprocess.run(
             ["claude", "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=timeout,
         )
     except FileNotFoundError:
         raise RuntimeError("'claude' CLI not found — install Claude Code first")
     except subprocess.TimeoutExpired:
-        raise RuntimeError("claude timed out (120s)")
-
+        raise RuntimeError(f"claude timed out ({timeout}s)")
     if proc.returncode != 0:
         raise RuntimeError(f"claude failed: {proc.stderr.strip()}")
-    return _extract_yaml(proc.stdout)
+    return proc.stdout.strip()
+
+
+def generate_plan(description: str) -> tuple[str, str]:
+    """Two-phase plan generation: brainstorm design, then generate YAML.
+
+    Returns (yaml_text, design_text).
+    """
+    # phase 1: brainstorm — explore task space, make design decisions
+    _log("  phase 1: brainstorming...")
+    design = _call_claude(_BRAINSTORM_PROMPT + description, timeout=120)
+    _log(f"  design: {len(design)} chars")
+
+    # phase 2: generate YAML from design + schema
+    _log("  phase 2: generating YAML...")
+    gen_prompt = _PLAN_PROMPT + (
+        f"\nDesign document (from brainstorming phase):\n{design}\n\n"
+        f"Original task: {description}"
+    )
+    raw = _call_claude(gen_prompt, timeout=120)
+    return _extract_yaml(raw), design
 
 
 def _extract_yaml(text: str) -> str:
@@ -791,10 +833,19 @@ def main():
     elif args.command == "plan":
         _log("generating workflow...")
         try:
-            raw = generate_plan(args.description)
+            raw, design = generate_plan(args.description)
         except RuntimeError as e:
             _log(f"error: {e}")
             sys.exit(1)
+
+        # save brainstorm design to .dage/plans/
+        plan_dir = os.path.join(".dage", "plans")
+        os.makedirs(plan_dir, exist_ok=True)
+        design_file = os.path.join(plan_dir,
+            f"{time.strftime('%Y%m%d-%H%M%S')}-design.md")
+        with open(design_file, "w") as f:
+            f.write(f"# Design: {args.description}\n\n{design}\n")
+        _log(f"  design: {design_file}")
 
         # validate and preview
         try:
