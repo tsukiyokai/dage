@@ -411,8 +411,46 @@ def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
             return name, m.group(1).strip()
     return None
 
+_DAGE_KNOWLEDGE = """\
+How dage works:
+- Each `claude` node spawns a ccx session (Claude Code AI agent).
+  ccx can read/write files, run shell commands, use subagents, and reason about code.
+  Each session has limited context — its prompt must be self-contained.
+  The agent writes findings/results to a notes file (SHARED_TASK_NOTES.md),
+  which becomes ${{nodes.NAME.output}} for downstream nodes.
+- Each `shell` node runs a command. Use for: git, test, build, lint, benchmarks.
+- Nodes in the same layer (no mutual deps) run in parallel automatically.
+- A `gate` node that fails skips ALL its downstream nodes (short-circuit).
+
+ccx prompt writing guide:
+- Structure: Goal → Context (upstream outputs) → Specific tasks → Deliverables
+- The agent MUST write its findings to notes. Say "Write findings to notes" explicitly.
+- Inject upstream context via ${{nodes.NAME.output}} — this is the full notes file text.
+- For deep analysis: use `role: context`, max_runs 8-10, tell agent to be thorough.
+- For implementation: max_runs 10+, timeout 45m-1h, tell agent to write tests first.
+- For simple info gathering: use `type: shell` with a command instead of ccx.
+- After implementation nodes, always add a shell gate node (cargo test, pytest, make).
+
+Node schema:
+  <name>:
+    type: shell | claude
+    role: produce|context|gate|evaluate|gc|meta
+    deps: [a, b]
+    cmd: "..."                    # required for shell
+    prompt: |                     # required for claude
+      Goal: ...
+      Context: ${{nodes.upstream.output}}
+      Tasks: 1. ... 2. ...
+      Write all findings to notes.
+    retry: N
+    timeout: "30m"
+    max_runs: 5                   # claude: tool-use iterations (5=light, 10+=heavy)
+"""
+
 _REPLAN_PROMPT = """\
 You are a workflow replanner. A running DAG needs adjustment.
+
+{dage_knowledge}
 
 Original task: {task}
 
@@ -432,17 +470,21 @@ Rules:
 - ADD new nodes (may depend on completed or new nodes)
 - REMOVE pending nodes that are no longer needed
 - Cannot touch completed nodes. No cycles allowed.
-- New nodes must have type (shell|claude) and either cmd or prompt.
+- For claude nodes: prompt must be self-contained, include "Write findings to notes"
+- For shell nodes: cmd must be a valid shell command
 
 Output ONLY valid YAML (no fences, no commentary):
   remove: [name, ...]
   add:
     name:
       type: shell | claude
+      role: produce | context | gate
       deps: [...]
       cmd: "..."       # for shell
       prompt: |        # for claude
-        ...
+        Goal: ...
+        Write all findings to notes.
+      max_runs: 5      # claude only (5=light, 10+=heavy)
 """
 
 def call_replanner(wf: dict, nodes: dict[str, Node],
@@ -462,6 +504,7 @@ def call_replanner(wf: dict, nodes: dict[str, Node],
     trigger_output = results[trigger].output[-2000:]
 
     prompt = _REPLAN_PROMPT.format(
+        dage_knowledge = _DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}"),
         task        = wf.get("description", "(no description)"),
         completed   = comp_summary or "  (none)",
         trigger     = trigger,
@@ -795,42 +838,10 @@ _PLAN_PROMPT = """\
 You are a workflow planner for dage, a DAG-based workflow orchestrator.
 Turn the task description into a valid dage YAML workflow.
 
-How dage works:
-- Each `claude` node spawns a ccx session (Claude Code AI agent).
-  ccx can read/write files, run shell commands, use subagents, and reason about code.
-  Each session has limited context — its prompt must be self-contained.
-  The agent writes findings/results to a notes file (SHARED_TASK_NOTES.md),
-  which becomes ${nodes.NAME.output} for downstream nodes.
-- Each `shell` node runs a command. Use for: git, test, build, lint, benchmarks.
-- Nodes in the same layer (no mutual deps) run in parallel automatically.
-- A `gate` node that fails skips ALL its downstream nodes (short-circuit).
-
-ccx prompt writing guide:
-- Structure: Goal → Context (upstream outputs) → Specific tasks → Deliverables
-- The agent MUST write its findings to notes. Say "Write findings to notes" explicitly.
-- Inject upstream context via ${nodes.NAME.output} — this is the full notes file text.
-- For deep analysis: use `role: context`, max_runs 8-10, tell agent to be thorough.
-- For implementation: max_runs 10+, timeout 45m-1h, tell agent to write tests first.
-- For simple info gathering: use `type: shell` with a command instead of ccx.
-- After implementation nodes, always add a shell gate node (cargo test, pytest, make).
-
-Schema:
-  nodes:
-    <name>:                         # snake_case
-      type: shell | claude          # default: claude
-      role: produce|context|gate|evaluate|gc|meta
-      deps: [a, b]                  # data/order dependencies
-      cmd: "..."                    # required for shell
-      prompt: |                     # required for claude (block scalar)
-        Goal: ...
-        Context: ${nodes.upstream.output}
-        Tasks: 1. ... 2. ...
-        Write all findings to notes.
-      condition: "expr"             # skip if false
-      adaptive: true                # enable replan signal detection (default: false)
-      retry: N                      # optional retry count
-      timeout: "30m"                # e.g. 1h, 5m, 30s
-      max_runs: 5                   # claude: tool-use iterations (5=light, 10+=heavy)
+""" + _DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}") + """
+Additional schema fields (plan-only):
+  condition: "expr"             # skip if false
+  adaptive: true                # enable replan signal detection (default: false)
   vars:
     key: value
 
