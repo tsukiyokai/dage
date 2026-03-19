@@ -60,6 +60,7 @@ class Node:
     timeout:   str             = ""
     retry:     int             = 0
     adaptive:  bool            = False
+    skills:    list[str]       = field(default_factory=list)
 
 @dataclass
 class NodeResult:
@@ -97,6 +98,7 @@ def _build_one_node(name: str, spec: dict, defaults: dict) -> Node:
         timeout   = spec.get("timeout", defaults.get("timeout", "")),
         retry     = spec.get("retry", 0),
         adaptive  = spec.get("adaptive", False),
+        skills    = spec.get("skills", defaults.get("skills", [])),
     )
 
 def build_nodes(wf: dict) -> dict[str, Node]:
@@ -242,6 +244,29 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
     return proc.returncode, "".join(stdout_buf), "".join(stderr_buf)
 
 
+_SKILL_SEARCH_PATHS = [
+    os.path.expanduser("~/.claude/skills/{name}"),
+    ".claude/skills/{name}",
+]
+
+def _load_skills(names: list[str]) -> str:
+    """Load SKILL.md content for each named skill. Returns concatenated text."""
+    parts = []
+    for name in names:
+        for pattern in _SKILL_SEARCH_PATHS:
+            skill_dir = pattern.format(name=name)
+            # resolve symlinks
+            skill_dir = os.path.realpath(skill_dir)
+            skill_file = os.path.join(skill_dir, "SKILL.md")
+            if os.path.exists(skill_file):
+                content = Path(skill_file).read_text().strip()
+                parts.append(f"# Skill: {name}\n\n{content}")
+                _log(f"  skill loaded: {name} ({skill_file})")
+                break
+        else:
+            _log(f"  skill not found: {name}")
+    return "\n\n".join(parts)
+
 def run_shell(node: Node, cmd: str, cwd: str | None = None) -> NodeResult:
     t0 = time.monotonic()
     try:
@@ -282,6 +307,10 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
         cmd += ["--worktree", wt]
     if node.timeout:
         cmd += ["--max-duration", node.timeout]
+    if node.skills:
+        skill_content = _load_skills(node.skills)
+        if skill_content:
+            cmd += ["--append-system-prompt", skill_content]
 
     t0 = time.monotonic()
     try:

@@ -4,6 +4,9 @@
 
 description: "Planck v0.1 Phase A — Rust Plan Compiler + PyO3，不依赖Ascend硬件"
 
+defaults:
+  skills: [vibe-opt]
+
 vars:
   repo_dir: /Users/shanshan/repo/_me/planck
 
