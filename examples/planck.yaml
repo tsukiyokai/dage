@@ -1,18 +1,14 @@
-# planck.yaml — Planck v0.1 Phase A implementation workflow
-# Builds: Rust Plan Compiler + PyO3 bindings (no Ascend hardware needed)
+# planck.yaml — Planck v0.1 Phase A: Rust Plan Compiler + PyO3 bindings
 # Ref: docs/plans/2026-03-19-planck-design.md
 #      docs/plans/2026-03-19-planck-v01-implementation.md
 
-defaults:
-  type: claude
-  max_runs: 5
-  timeout: 30m
+description: "Planck v0.1 Phase A — Rust Plan Compiler + PyO3, no Ascend hardware needed"
 
 vars:
   repo_dir: /Users/shanshan/repo/_me/planck
 
 nodes:
-  # ---- Layer 0: context gathering (parallel) ----
+  # ---- context gathering (parallel) ----
   read_design:
     role: context
     prompt: |
@@ -22,7 +18,6 @@ nodes:
       Plan IR (3-layer: CommGraph -> LogicalPlan -> ExecutionPlan),
       9 primitive instructions (Put/Signal/Wait + fused variants),
       6 compiler optimization passes, and v0.1 scope.
-      Write the full summary to notes.
 
   read_plan:
     role: context
@@ -31,7 +26,6 @@ nodes:
       Summarize: 7 chunks, file structure, dependency map, and for each task:
       key types/structs, test specifications, and implementation requirements.
       Focus on Chunks 1-5 (Phase A, Rust + Python).
-      Write the full summary to notes.
 
   scan_repo:
     role: context
@@ -43,21 +37,15 @@ nodes:
       echo "=== Cargo.toml ===" && cat Cargo.toml 2>/dev/null || echo "(not found)" &&
       echo "=== cargo test ===" && cargo test 2>&1 | tail -20 || echo "(cargo test failed or not configured)"
 
-  # ---- Layer 1: project skeleton ----
+  # ---- project skeleton ----
   scaffold:
     deps: [read_design, read_plan, scan_repo]
-    max_runs: 8
     prompt: |
       Implement Chunk 1 from the implementation plan: project skeleton.
 
-      Design context:
-      ${nodes.read_design.output}
-
-      Implementation plan:
-      ${nodes.read_plan.output}
-
-      Current repo state:
-      ${nodes.scan_repo.output}
+      Design context: ${nodes.read_design.output}
+      Implementation plan: ${nodes.read_plan.output}
+      Current repo state: ${nodes.scan_repo.output}
 
       Tasks:
       1. Cargo workspace (root Cargo.toml, rust-toolchain.toml)
@@ -72,11 +60,9 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo build 2>&1"
 
-  # ---- Layer 2: Plan IR + Topology + Cost Model ----
+  # ---- Plan IR + Topology (parallel after scaffold) ----
   impl_ir:
     deps: [gate_build]
-    max_runs: 10
-    timeout: 45m
     prompt: |
       Implement plan.rs — Plan IR types with C-compatible serialization.
 
@@ -94,7 +80,6 @@ nodes:
 
   impl_topo:
     deps: [gate_build]
-    max_runs: 8
     prompt: |
       Implement topo.rs — 8-card HCCS topology.
 
@@ -112,9 +97,9 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- plan topo 2>&1"
 
+  # ---- Cost Model ----
   impl_cost:
     deps: [gate_ir_topo]
-    max_runs: 8
     prompt: |
       Implement cost.rs — alpha-beta-gamma cost model.
 
@@ -132,11 +117,9 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- cost 2>&1"
 
-  # ---- Layer 3: Algorithm + Scheduler + Fusion ----
+  # ---- Algorithm + Scheduler + Fusion (sequential chain) ----
   impl_algo:
     deps: [gate_cost]
-    max_runs: 10
-    timeout: 45m
     prompt: |
       Implement algo.rs — Ring AllReduce algorithm decomposition.
 
@@ -154,8 +137,6 @@ nodes:
 
   impl_sched:
     deps: [impl_algo]
-    max_runs: 10
-    timeout: 45m
     prompt: |
       Implement sched.rs — Pipeline scheduler with double-buffered receive.
 
@@ -174,8 +155,7 @@ nodes:
 
   impl_fusion:
     deps: [impl_sched]
-    max_runs: 10
-    timeout: 45m
+    adaptive: true
     prompt: |
       Add to plan.rs: instruction fusion pass and top-level compile() function.
 
@@ -197,11 +177,9 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core 2>&1"
 
-  # ---- Layer 4: Template + Simulation ----
+  # ---- Template + Simulation ----
   impl_template:
     deps: [gate_compiler]
-    max_runs: 10
-    timeout: 45m
     prompt: |
       Implement Chunk 4: template.rs + end-to-end simulation test.
 
@@ -223,11 +201,9 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- simulate 2>&1"
 
-  # ---- Layer 5: PyO3 bindings ----
+  # ---- PyO3 bindings ----
   impl_pyo3:
     deps: [gate_simulation]
-    max_runs: 10
-    timeout: 45m
     prompt: |
       Implement Chunk 5: PyO3 bindings.
 
@@ -250,7 +226,7 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && maturin develop 2>&1 && pytest tests/test_plan_compile.py -v 2>&1"
 
-  # ---- Layer 6: report ----
+  # ---- report ----
   report:
     role: meta
     deps: [gate_python]

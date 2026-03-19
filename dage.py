@@ -55,7 +55,7 @@ class Node:
     prompt:    str             = ""
     cmd:       str             = ""
     condition: str             = ""
-    max_runs:  int             = 5
+    max_runs:  int             = 0
     worktree:  str             = ""
     timeout:   str             = ""
     retry:     int             = 0
@@ -92,7 +92,7 @@ def _build_one_node(name: str, spec: dict, defaults: dict) -> Node:
         prompt    = spec.get("prompt", ""),
         cmd       = spec.get("cmd", ""),
         condition = spec.get("condition", ""),
-        max_runs  = spec.get("max_runs", defaults.get("max_runs", 5)),
+        max_runs  = spec.get("max_runs", defaults.get("max_runs", 0)),
         worktree  = spec.get("worktree", ""),
         timeout   = spec.get("timeout", defaults.get("timeout", "")),
         retry     = spec.get("retry", 0),
@@ -390,12 +390,11 @@ ccx prompt writing guide:
 - The prompt is your GOAL, not a script. ccx wraps it in workflow context automatically.
 - Focus on: What to achieve + upstream context. Do NOT say "write to notes" (ccx does it).
 - Inject upstream context via ${{nodes.NAME.output}} — the upstream node's notes file text.
-- Sizing (max_runs = ccx iterations, each is a full Claude Code session):
-    1     one-shot: simple query, single-file edit
-    3     small: targeted fix, read + edit a few files
-    5     moderate: multi-file change with some analysis
-    8-10  heavy: deep analysis, or implementation with tests
-    10+   complex: large feature, needs planning + multi-step execution
+- max_runs = ccx iterations (each is a full Claude Code session):
+    0     unlimited: stopped by completion signal (default, recommended)
+    1-3   cap for simple tasks if you want to limit cost
+    5-10  cap for moderate tasks
+    10+   cap for complex tasks (usually unnecessary with completion signal)
 - For simple info gathering: use `type: shell` with a command instead of ccx.
 - After implementation nodes, always add a shell gate node (cargo test, pytest, make).
 
@@ -411,7 +410,7 @@ Node schema:
       Specific tasks: 1. ... 2. ...
     retry: N
     timeout: "30m"                # e.g. 1h, 5m, 30s
-    max_runs: 5                   # ccx iterations (full Claude Code sessions)
+    max_runs: 0                   # ccx iterations (0=unlimited, completion-signal-driven)
 """
 
 _REPLAN_PROMPT = """\
@@ -453,7 +452,7 @@ Output ONLY valid YAML (no fences, no commentary):
       prompt: |        # for claude
         Goal: ...
         Context: ...
-      max_runs: 5      # ccx iterations (1=one-shot, 5=moderate, 10+=complex)
+      max_runs: 0      # ccx iterations (0=unlimited, default)
 """
 
 def call_replanner(wf: dict, nodes: dict[str, Node],
@@ -848,20 +847,16 @@ Example — codebase analysis + implementation pipeline:
   nodes:
     scan:
       role: context
-      max_runs: 8
       prompt: |
         Scan the codebase structure, key modules, build system, and test coverage.
         Be thorough — read actual files, don't guess.
     read_docs:
       role: context
-      max_runs: 3
       prompt: |
         Read docs/design.md and docs/implementation-plan.md.
         Summarize architecture, key decisions, and implementation tasks.
     implement:
       deps: [scan, read_docs]
-      max_runs: 10
-      timeout: 1h
       prompt: |
         Implement the feature based on the plan.
 
@@ -877,7 +872,6 @@ Example — codebase analysis + implementation pipeline:
     report:
       deps: [test]
       role: meta
-      max_runs: 1
       prompt: |
         Summarize: what was implemented, test=${nodes.test.status}.
         Include any issues and next steps.
@@ -908,10 +902,11 @@ Think step by step, making all decisions autonomously.
 4. PARALLELISM: Which subtasks are independent? Maximize concurrent execution.
 5. GATES: After every implementation/coding subtask, add a shell verification
    step (test/build/lint) as a gate. Gate failure blocks all downstream work.
-6. RESOURCE ESTIMATE: For each claude subtask, estimate complexity:
-   - Light (reading/summarizing): max_runs 1-3
-   - Medium (analysis/planning): max_runs 5-8, timeout 30m
-   - Heavy (implementation/coding): max_runs 10+, timeout 45m-1h
+6. RESOURCE ESTIMATE: For each claude subtask, default is max_runs 0 (unlimited,
+   completion-signal-driven). Only set max_runs or timeout to cap cost:
+   - Light (reading/summarizing): max_runs 3 if capping
+   - Medium (analysis/planning): max_runs 8 if capping
+   - Heavy (implementation/coding): usually leave unlimited
 
 Output a structured design document. Be specific about what each subtask does,
 what it reads as input, and what it produces as output.
