@@ -439,8 +439,10 @@ Rules:
 - Cannot touch completed nodes. No cycles allowed.
 - For claude nodes: prompt is the GOAL (ccx auto-handles notes and iteration context)
 - For shell nodes: cmd must be a valid shell command
+- You MUST provide a justification explaining how these changes serve the original task
 
 Output ONLY valid YAML (no fences, no commentary):
+  justification: "one sentence: how this replan serves the original task"
   remove: [name, ...]
   add:
     name:
@@ -528,9 +530,39 @@ def apply_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
             _log(f"[replan] warning: {len(removed)} removed nodes lost in rollback")
         return {"seq": seq, "added": [], "removed": []}
 
-    event = {"seq": seq, "added": added, "removed": removed}
+    event = {"seq": seq, "added": added, "removed": removed,
+             "justification": replan_result.get("justification", "")}
     _save_json(os.path.join(run_dir, f"replan-{seq}.json"), event)
     return event
+
+def _format_replan_proposal(replan_result: dict) -> str:
+    """Format a replan proposal for human review."""
+    lines = []
+    justification = replan_result.get("justification", "(none)")
+    lines.append(f"  justification: {justification}")
+
+    removed = replan_result.get("remove", [])
+    if removed:
+        lines.append(f"  remove: {removed}")
+
+    added = replan_result.get("add", {})
+    for name, spec in added.items():
+        t    = spec.get("type", "claude")
+        deps = spec.get("deps", [])
+        lines.append(f"  add: {name} ({t}) deps={deps}")
+    return "\n".join(lines)
+
+def _confirm_replan() -> bool:
+    """Ask user for interactive approval. Returns True if approved."""
+    try:
+        if not sys.stdin.isatty():
+            _log("  [confirm] stdin not a tty, auto-approving")
+            return True
+        _log("  approve? [Y/n] ", )
+        answer = input().strip().lower()
+        return answer in ("", "y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 # ==== DAG Runner ===========================================================
 
@@ -551,6 +583,7 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
             _log(f"resumed: {sorted(resumed)}")
 
     replan_cfg   = wf.get("replan", {})
+    replan_mode  = replan_cfg.get("mode", "auto")
     max_replans  = replan_cfg.get("max_replans", 3)
     max_nodes    = replan_cfg.get("max_nodes", 50)
     replan_count = 0
@@ -627,18 +660,43 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     signal = detect_replan(nodes, results, to_run)
                     if signal:
                         trigger, reason = signal
-                        _log(f"[replan {replan_count+1}/{max_replans}] "
+                        seq = replan_count + 1
+                        _log(f"[replan {seq}/{max_replans}] "
                              f"triggered by '{trigger}': {reason}")
-                        replan_result = call_replanner(
-                            wf, nodes, results, trigger, reason,
-                            replan_count + 1, run_dir)
-                        if replan_result:
-                            event = apply_replan(
-                                nodes, results, blocked, replan_result,
-                                wf.get("defaults", {}), run_dir, replan_count + 1)
+
+                        if replan_mode == "log":
+                            _log(f"[replan] mode=log, signal recorded but not acted on")
+                            _save_json(os.path.join(run_dir, f"replan-{seq}-signal.json"),
+                                       {"seq": seq, "trigger": trigger, "reason": reason,
+                                        "mode": "log"})
                             replan_count += 1
-                            _log(f"[replan] +{len(event['added'])} "
-                                 f"-{len(event['removed'])} nodes")
+                            continue
+
+                        replan_result = call_replanner(
+                            wf, nodes, results, trigger, reason, seq, run_dir)
+
+                        if not replan_result:
+                            continue
+
+                        justification = replan_result.get("justification", "")
+                        if not justification:
+                            _log("[replan] rejected: no justification provided")
+                            replan_count += 1
+                            continue
+
+                        _log(f"[replan] proposal:\n{_format_replan_proposal(replan_result)}")
+
+                        if replan_mode == "confirm" and not _confirm_replan():
+                            _log("[replan] rejected by user")
+                            replan_count += 1
+                            continue
+
+                        event = apply_replan(
+                            nodes, results, blocked, replan_result,
+                            wf.get("defaults", {}), run_dir, seq)
+                        replan_count += 1
+                        _log(f"[replan] +{len(event['added'])} "
+                             f"-{len(event['removed'])} nodes")
 
     except KeyboardInterrupt:
         _log("\n[interrupted] saving progress...")

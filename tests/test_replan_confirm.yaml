@@ -1,0 +1,20 @@
+# test_replan_confirm.yaml — mode: confirm requires user approval
+# When stdin is not a tty (e.g. piped), auto-approves
+
+description: "test confirm mode"
+
+replan:
+  mode: confirm
+  max_replans: 2
+
+defaults:
+  type: shell
+
+nodes:
+  step1:
+    adaptive: true
+    cmd: "echo 'check done [REPLAN: add lint step]'"
+
+  step2:
+    deps: [step1]
+    cmd: "echo 'final'"

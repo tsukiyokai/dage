@@ -1,0 +1,21 @@
+# test_replan_log.yaml — mode: log only records signals, no AI call
+# Expected: step1 triggers signal, engine logs but does NOT call replanner,
+#           step2 runs normally with original deps
+
+description: "test log mode"
+
+replan:
+  mode: log
+  max_replans: 2
+
+defaults:
+  type: shell
+
+nodes:
+  step1:
+    adaptive: true
+    cmd: "echo 'found issue [REPLAN: need validation]'"
+
+  step2:
+    deps: [step1]
+    cmd: "echo 'proceeding without replan'"
