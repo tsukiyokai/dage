@@ -413,21 +413,26 @@ def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
 
 _DAGE_KNOWLEDGE = """\
 How dage works:
-- Each `claude` node spawns a ccx session (Claude Code AI agent).
-  ccx can read/write files, run shell commands, use subagents, and reason about code.
-  Each session has limited context — its prompt must be self-contained.
-  The agent writes findings/results to a notes file (SHARED_TASK_NOTES.md),
-  which becomes ${{nodes.NAME.output}} for downstream nodes.
+- Each `claude` node spawns a ccx session — an iterative Claude Code development loop.
+  ccx runs Claude Code in multiple iterations (controlled by max_runs).
+  Iteration 1: agent plans the task and creates a notes file.
+  Iterations 2+: agent executes against the plan, reading previous notes as context.
+  ccx automatically handles: notes file read/write, completion signal, iteration context.
+  The final notes file content becomes ${{nodes.NAME.output}} for downstream nodes.
 - Each `shell` node runs a command. Use for: git, test, build, lint, benchmarks.
 - Nodes in the same layer (no mutual deps) run in parallel automatically.
 - A `gate` node that fails skips ALL its downstream nodes (short-circuit).
 
 ccx prompt writing guide:
-- Structure: Goal → Context (upstream outputs) → Specific tasks → Deliverables
-- The agent MUST write its findings to notes. Say "Write findings to notes" explicitly.
-- Inject upstream context via ${{nodes.NAME.output}} — this is the full notes file text.
-- For deep analysis: use `role: context`, max_runs 8-10, tell agent to be thorough.
-- For implementation: max_runs 10+, timeout 45m-1h, tell agent to write tests first.
+- The prompt is your GOAL, not a script. ccx wraps it in workflow context automatically.
+- Focus on: What to achieve + upstream context. Do NOT say "write to notes" (ccx does it).
+- Inject upstream context via ${{nodes.NAME.output}} — the upstream node's notes file text.
+- Sizing (max_runs = ccx iterations, each is a full Claude Code session):
+    1     one-shot: simple query, single-file edit
+    3     small: targeted fix, read + edit a few files
+    5     moderate: multi-file change with some analysis
+    8-10  heavy: deep analysis, or implementation with tests
+    10+   complex: large feature, needs planning + multi-step execution
 - For simple info gathering: use `type: shell` with a command instead of ccx.
 - After implementation nodes, always add a shell gate node (cargo test, pytest, make).
 
@@ -439,12 +444,11 @@ Node schema:
     cmd: "..."                    # required for shell
     prompt: |                     # required for claude
       Goal: ...
-      Context: ${{nodes.upstream.output}}
-      Tasks: 1. ... 2. ...
-      Write all findings to notes.
+      Context from upstream: ${{nodes.upstream.output}}
+      Specific tasks: 1. ... 2. ...
     retry: N
-    timeout: "30m"
-    max_runs: 5                   # claude: tool-use iterations (5=light, 10+=heavy)
+    timeout: "30m"                # e.g. 1h, 5m, 30s
+    max_runs: 5                   # ccx iterations (full Claude Code sessions)
 """
 
 _REPLAN_PROMPT = """\
@@ -470,7 +474,7 @@ Rules:
 - ADD new nodes (may depend on completed or new nodes)
 - REMOVE pending nodes that are no longer needed
 - Cannot touch completed nodes. No cycles allowed.
-- For claude nodes: prompt must be self-contained, include "Write findings to notes"
+- For claude nodes: prompt is the GOAL (ccx auto-handles notes and iteration context)
 - For shell nodes: cmd must be a valid shell command
 
 Output ONLY valid YAML (no fences, no commentary):
@@ -483,8 +487,8 @@ Output ONLY valid YAML (no fences, no commentary):
       cmd: "..."       # for shell
       prompt: |        # for claude
         Goal: ...
-        Write all findings to notes.
-      max_runs: 5      # claude only (5=light, 10+=heavy)
+        Context: ...
+      max_runs: 5      # ccx iterations (1=one-shot, 5=moderate, 10+=complex)
 """
 
 def call_replanner(wf: dict, nodes: dict[str, Node],
@@ -855,13 +859,12 @@ Example — codebase analysis + implementation pipeline:
       prompt: |
         Scan the codebase structure, key modules, build system, and test coverage.
         Be thorough — read actual files, don't guess.
-        Write a structured summary to notes.
     read_docs:
       role: context
+      max_runs: 3
       prompt: |
         Read docs/design.md and docs/implementation-plan.md.
         Summarize architecture, key decisions, and implementation tasks.
-        Write the full summary to notes.
     implement:
       deps: [scan, read_docs]
       max_runs: 10
@@ -881,9 +884,10 @@ Example — codebase analysis + implementation pipeline:
     report:
       deps: [test]
       role: meta
+      max_runs: 1
       prompt: |
         Summarize: what was implemented, test=${nodes.test.status}.
-        Include any issues and next steps. Write report to notes.
+        Include any issues and next steps.
 
 Rules:
 - deps only when B needs A's output or A must succeed first
