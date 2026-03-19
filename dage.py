@@ -59,6 +59,7 @@ class Node:
     worktree:  str             = ""
     timeout:   str             = ""
     retry:     int             = 0
+    adaptive:  bool            = False
 
 @dataclass
 class NodeResult:
@@ -81,30 +82,31 @@ def load_workflow(path: str) -> dict:
         raise ValueError(f"invalid workflow: 'nodes' key required")
     return wf
 
+def _build_one_node(name: str, spec: dict, defaults: dict) -> Node:
+    """Build a single Node from spec dict, applying defaults."""
+    if not isinstance(spec, dict):
+        raise ValueError(f"node '{name}': spec must be a mapping")
+    return Node(
+        name     = name,
+        type     = NodeType(spec.get("type", defaults.get("type", "claude"))),
+        role     = Role(spec.get("role", "produce")),
+        deps     = spec.get("deps", []),
+        prompt   = spec.get("prompt", ""),
+        cmd      = spec.get("cmd", ""),
+        condition= spec.get("condition", ""),
+        max_runs = spec.get("max_runs", defaults.get("max_runs", 5)),
+        worktree = spec.get("worktree", ""),
+        timeout  = spec.get("timeout", defaults.get("timeout", "")),
+        retry    = spec.get("retry", 0),
+        adaptive = spec.get("adaptive", False),
+    )
+
 def build_nodes(wf: dict) -> dict[str, Node]:
     """Build Node objects from workflow dict, applying defaults."""
     defaults = wf.get("defaults", {})
-    def_type     = defaults.get("type", "claude")
-    def_max_runs = defaults.get("max_runs", 5)
-    def_timeout  = defaults.get("timeout", "")
-
     nodes = {}
     for name, spec in wf["nodes"].items():
-        if not isinstance(spec, dict):
-            raise ValueError(f"node '{name}': spec must be a mapping")
-        nodes[name] = Node(
-            name     = name,
-            type     = NodeType(spec.get("type", def_type)),
-            role     = Role(spec.get("role", "produce")),
-            deps     = spec.get("deps", []),
-            prompt   = spec.get("prompt", ""),
-            cmd      = spec.get("cmd", ""),
-            condition= spec.get("condition", ""),
-            max_runs = spec.get("max_runs", def_max_runs),
-            worktree = spec.get("worktree", ""),
-            timeout  = spec.get("timeout", def_timeout),
-            retry    = spec.get("retry", 0),
-        )
+        nodes[name] = _build_one_node(name, spec, defaults)
     return nodes
 
 def validate_workflow(nodes: dict[str, Node]) -> list[str]:
@@ -188,6 +190,23 @@ def topo_layers(nodes: dict[str, Node]) -> list[list[str]]:
         for name in ready:
             ts.done(name)
     return layers
+
+# ==== Dynamic Scheduling ===================================================
+
+def next_runnable(nodes: dict[str, Node], results: dict[str, NodeResult],
+                  blocked: set[str]) -> list[str]:
+    """Compute currently runnable nodes: deps all done + self PENDING + not blocked."""
+    runnable = []
+    for name, node in nodes.items():
+        if results[name].status != Status.PENDING:
+            continue
+        if name in blocked:
+            continue
+        if all(results[d].status in (Status.SUCCESS, Status.SKIPPED)
+               for d in node.deps):
+            runnable.append(name)
+    runnable.sort()
+    return runnable
 
 # ==== Gate Propagation =====================================================
 
@@ -377,9 +396,143 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
     return last_result
 
+# ==== Adaptive Replanning ==================================================
+
+def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
+                  layer: list[str]) -> tuple[str, str] | None:
+    """Scan just-executed layer for replan signals from adaptive nodes."""
+    for name in layer:
+        if not nodes[name].adaptive:
+            continue
+        if results[name].status != Status.SUCCESS:
+            continue
+        m = re.search(r'\[REPLAN:\s*(.+?)\]', results[name].output)
+        if m:
+            return name, m.group(1).strip()
+    return None
+
+_REPLAN_PROMPT = """\
+You are a workflow replanner. A running DAG needs adjustment.
+
+Original task: {task}
+
+Completed nodes (cannot be changed):
+{completed}
+
+Trigger node '{trigger}' signals: {reason}
+Trigger output (last 2000 chars):
+{output}
+
+Pending nodes (may be removed):
+{pending}
+
+Replan #{replan_seq} of max {max_replans}. Minimize changes.
+
+Rules:
+- ADD new nodes (may depend on completed or new nodes)
+- REMOVE pending nodes that are no longer needed
+- Cannot touch completed nodes. No cycles allowed.
+- New nodes must have type (shell|claude) and either cmd or prompt.
+
+Output ONLY valid YAML (no fences, no commentary):
+  remove: [name, ...]
+  add:
+    name:
+      type: shell | claude
+      deps: [...]
+      cmd: "..."       # for shell
+      prompt: |        # for claude
+        ...
+"""
+
+def call_replanner(wf: dict, nodes: dict[str, Node],
+                   results: dict[str, NodeResult],
+                   trigger: str, reason: str,
+                   replan_seq: int, run_dir: str) -> dict | None:
+    """Call AI replanner and return parsed replan instructions."""
+    completed = {n for n, r in results.items() if r.status != Status.PENDING}
+    pending   = {n for n in nodes if n not in completed}
+
+    comp_summary = "\n".join(
+        f"  {n}: {results[n].status.value} ({results[n].duration:.0f}s)"
+        for n in sorted(completed))
+    pend_summary = "\n".join(
+        f"  {n}: deps={nodes[n].deps}" for n in sorted(pending))
+
+    trigger_output = results[trigger].output[-2000:]
+
+    prompt = _REPLAN_PROMPT.format(
+        task        = wf.get("description", "(no description)"),
+        completed   = comp_summary or "  (none)",
+        trigger     = trigger,
+        reason      = reason,
+        output      = trigger_output,
+        pending     = pend_summary or "  (none)",
+        replan_seq  = replan_seq,
+        max_replans = wf.get("replan", {}).get("max_replans", 3),
+    )
+
+    try:
+        raw = _call_claude(prompt, timeout=120)
+        raw = _extract_yaml(raw)
+        result = yaml.safe_load(raw)
+        if not isinstance(result, dict):
+            _log(f"[replan] invalid response (not a dict), skipping")
+            return None
+        # save raw response for debugging
+        with open(os.path.join(run_dir, f"replan-{replan_seq}-raw.yaml"), "w") as f:
+            f.write(raw)
+        return result
+    except Exception as e:
+        _log(f"[replan] replanner failed: {e}")
+        return None
+
+def apply_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
+                 blocked: set[str], replan_result: dict,
+                 defaults: dict, run_dir: str, seq: int) -> dict:
+    """Apply replan: remove pending nodes, add new ones. Validates and rolls back on error."""
+    removed = []
+    for name in replan_result.get("remove", []):
+        if name in nodes and results[name].status == Status.PENDING:
+            del nodes[name]
+            del results[name]
+            blocked.discard(name)
+            # clean deps referencing removed nodes
+            for n in nodes.values():
+                if name in n.deps:
+                    n.deps.remove(name)
+            removed.append(name)
+
+    added = []
+    for name, spec in replan_result.get("add", {}).items():
+        if name not in nodes:
+            try:
+                nodes[name] = _build_one_node(name, spec, defaults)
+                results[name] = NodeResult()
+                added.append(name)
+            except Exception as e:
+                _log(f"[replan] failed to build node '{name}': {e}")
+
+    # validate resulting DAG
+    errors = validate_workflow(nodes)
+    if errors:
+        # rollback: remove added, restore removed
+        for name in added:
+            del nodes[name]
+            del results[name]
+        # cannot fully restore removed nodes — log warning
+        _log(f"[replan] rejected (validation errors): {errors}")
+        if removed:
+            _log(f"[replan] warning: {len(removed)} removed nodes lost in rollback")
+        return {"seq": seq, "added": [], "removed": []}
+
+    event = {"seq": seq, "added": added, "removed": removed}
+    _save_json(os.path.join(run_dir, f"replan-{seq}.json"), event)
+    return event
+
 def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
             dry_run: bool = False, from_node: str | None = None) -> dict[str, NodeResult]:
-    """Execute the full DAG in topological order."""
+    """Execute the full DAG with dynamic scheduling and adaptive replanning."""
     run_id  = time.strftime("%Y%m%d-%H%M%S")
     run_dir = os.path.join(repo_dir, ".dage", "runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
@@ -390,32 +543,37 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     # load prior results for --from resume
     if from_node:
         results, blocked = _load_resume_state(nodes, from_node, repo_dir)
+        resumed = [n for n, r in results.items() if r.status == Status.SUCCESS]
+        if resumed:
+            _log(f"resumed: {sorted(resumed)}")
 
-    layers = topo_layers(nodes)
+    # replan config
+    replan_cfg   = wf.get("replan", {})
+    max_replans  = replan_cfg.get("max_replans", 3)
+    max_nodes    = replan_cfg.get("max_nodes", 50)
+    replan_count = 0
 
-    _log(f"run {run_id}  nodes={len(nodes)}  layers={len(layers)}")
+    # snapshot original nodes for audit trail
+    _save_json(os.path.join(run_dir, "original-nodes.json"),
+               {n: _node_to_dict(nodes[n]) for n in nodes})
+
+    _log(f"run {run_id}  nodes={len(nodes)}")
     if dry_run:
         _log("[dry-run mode]")
     _log("")
 
     try:
         with ThreadPoolExecutor() as pool:
-            for layer_idx, layer in enumerate(layers):
-                # phase 1: filter skip/blocked/condition (serial, pure logic)
+            while True:
+                layer = next_runnable(nodes, results, blocked)
+                if not layer:
+                    break
+
+                # phase 1: filter condition (serial, pure logic)
                 to_run = []
                 ctx = build_context(wf, results, run_id)
                 for name in layer:
                     node = nodes[name]
-
-                    if from_node and results[name].status == Status.SUCCESS:
-                        _log(f"[{name}] skip (resumed)")
-                        continue
-
-                    if name in blocked:
-                        results[name] = NodeResult(status=Status.SKIPPED,
-                                                   output="blocked by failed gate")
-                        _log(f"[{name}] SKIPPED (gate)")
-                        continue
 
                     if should_skip(node, ctx):
                         results[name] = NodeResult(status=Status.SKIPPED,
@@ -426,6 +584,9 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     role_tag = node.role.value.upper()
                     _log(f"[{name}] {role_tag} ({node.type.value}) ...")
                     to_run.append(name)
+
+                if not to_run:
+                    continue  # all skipped by condition, loop picks up next wave
 
                 # auto-worktree for parallel claude nodes
                 claude_no_wt = [n for n in to_run
@@ -451,12 +612,35 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     _log(f"[{name}] {status_icon}  {r.duration:.1f}s"
                          + (f"  retries={r.retries}" if r.retries else ""))
 
-                # phase 3: gate propagation after whole layer completes
+                # phase 3: gate propagation — mark blocked nodes SKIPPED immediately
                 for name in to_run:
                     if nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
                         downstream = find_blocked(nodes, name)
                         blocked |= downstream
                         _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
+                        for b in downstream:
+                            if results.get(b, NodeResult()).status == Status.PENDING:
+                                results[b] = NodeResult(status=Status.SKIPPED,
+                                                        output="blocked by failed gate")
+                                _log(f"[{b}] SKIPPED (gate)")
+
+                # phase 4: adaptive replan check
+                if replan_count < max_replans and len(nodes) < max_nodes:
+                    signal = detect_replan(nodes, results, to_run)
+                    if signal:
+                        trigger, reason = signal
+                        _log(f"[replan {replan_count+1}/{max_replans}] "
+                             f"triggered by '{trigger}': {reason}")
+                        replan_result = call_replanner(
+                            wf, nodes, results, trigger, reason,
+                            replan_count + 1, run_dir)
+                        if replan_result:
+                            event = apply_replan(
+                                nodes, results, blocked, replan_result,
+                                wf.get("defaults", {}), run_dir, replan_count + 1)
+                            replan_count += 1
+                            _log(f"[replan] +{len(event['added'])} "
+                                 f"-{len(event['removed'])} nodes")
 
     except KeyboardInterrupt:
         _log("\n[interrupted] saving progress...")
@@ -508,6 +692,23 @@ def _load_resume_state(nodes: dict[str, Node], from_node: str,
     return results, blocked
 
 # ==== State Persistence ====================================================
+
+def _save_json(path: str, data):
+    """Write data as formatted JSON."""
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+def _node_to_dict(node: Node) -> dict:
+    """Serialize Node to plain dict for JSON snapshots."""
+    d = {"type": node.type.value, "role": node.role.value}
+    if node.deps:      d["deps"]      = node.deps
+    if node.prompt:    d["prompt"]    = node.prompt
+    if node.cmd:       d["cmd"]       = node.cmd
+    if node.condition: d["condition"] = node.condition
+    if node.adaptive:  d["adaptive"]  = True
+    if node.retry:     d["retry"]     = node.retry
+    if node.timeout:   d["timeout"]   = node.timeout
+    return d
 
 def save_state(run_dir: str, results: dict[str, NodeResult]):
     """Save run results to JSON."""
@@ -563,7 +764,8 @@ def print_plan(nodes: dict[str, Node]):
         for name in layer:
             node = nodes[name]
             deps = f" <- [{', '.join(node.deps)}]" if node.deps else ""
-            _log(f"    {name} ({node.type.value}/{node.role.value}){deps}")
+            adapt = " [adaptive]" if node.adaptive else ""
+            _log(f"    {name} ({node.type.value}/{node.role.value}){adapt}{deps}")
     _log("")
 
 def print_status(repo_dir: str):
@@ -625,6 +827,7 @@ Schema:
         Tasks: 1. ... 2. ...
         Write all findings to notes.
       condition: "expr"             # skip if false
+      adaptive: true                # enable replan signal detection (default: false)
       retry: N                      # optional retry count
       timeout: "30m"                # e.g. 1h, 5m, 30s
       max_runs: 5                   # claude: tool-use iterations (5=light, 10+=heavy)
