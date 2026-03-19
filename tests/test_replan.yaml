@@ -1,0 +1,30 @@
+# test_replan.yaml — adaptive replanning integration test
+# Tests: adaptive signal detection, replan trigger, DAG mutation
+# Note: actual replanning requires claude CLI; this tests the signal path.
+#
+# Expected results:
+#   step1   -> success (outputs [REPLAN: need validation step])
+#   step2   -> success (runs after step1)
+#
+# With replanner available, engine would:
+#   1. Detect [REPLAN: ...] from step1 (adaptive: true)
+#   2. Call replanner to add/remove nodes
+#   3. Execute new nodes before continuing
+
+description: "test adaptive replanning signal detection"
+
+replan:
+  max_replans: 2
+  max_nodes: 20
+
+defaults:
+  type: shell
+
+nodes:
+  step1:
+    adaptive: true
+    cmd: "echo 'analysis complete [REPLAN: need extra validation step]'"
+
+  step2:
+    deps: [step1]
+    cmd: "echo 'final step'"

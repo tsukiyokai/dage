@@ -91,3 +91,4 @@ Python 3.9+, PyYAML, and [ccx](https://github.com/tsukiyokai/dotfiles/blob/main/
 - **0.1.0** — initial release. DAG engine, shell/claude executors, gate short-circuit, variable interpolation, `--from` resume.
 - **0.2.0** — intra-layer parallel execution. Nodes without mutual dependencies run concurrently via ThreadPoolExecutor.
 - **0.3.0** — `dage plan`. Ask Claude to generate a workflow YAML from natural language, validate it, and preview the execution plan before running.
+- **0.4.0** — adaptive replanning. Nodes with `adaptive: true` can signal `[REPLAN: reason]` in their output, triggering AI-driven DAG mutation mid-run. Engine dynamically adds/removes pending nodes while preserving completed work.
