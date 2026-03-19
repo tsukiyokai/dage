@@ -1,31 +1,29 @@
-# planck.yaml — Planck v0.1 Phase A: Rust Plan Compiler + PyO3 bindings
+# planck.yaml — Planck v0.1 Phase A: Rust Plan Compiler + PyO3
 # Ref: docs/plans/2026-03-19-planck-design.md
 #      docs/plans/2026-03-19-planck-v01-implementation.md
 
-description: "Planck v0.1 Phase A — Rust Plan Compiler + PyO3, no Ascend hardware needed"
+description: "Planck v0.1 Phase A — Rust Plan Compiler + PyO3，不依赖Ascend硬件"
 
 vars:
   repo_dir: /Users/shanshan/repo/_me/planck
 
 nodes:
-  # ---- context gathering (parallel) ----
+  # ---- 上下文采集(并行) ----
   read_design:
     role: context
     prompt: |
-      Read docs/plans/2026-03-19-planck-design.md thoroughly.
-      Summarize: three-layer competitive advantage, system architecture
-      (Rust Plan Compiler + C++ Custom Ops + dual delivery channels),
-      Plan IR (3-layer: CommGraph -> LogicalPlan -> ExecutionPlan),
-      9 primitive instructions (Put/Signal/Wait + fused variants),
-      6 compiler optimization passes, and v0.1 scope.
+      精读 docs/plans/2026-03-19-planck-design.md。
+      提炼: 三层竞争优势、系统架构(Rust Plan Compiler + C++ Custom Ops + 双渠道交付)、
+      Plan IR三层结构(CommGraph -> LogicalPlan -> ExecutionPlan)、
+      9条原语指令(Put/Signal/Wait + 融合变体)、6个编译优化pass、v0.1 scope。
 
   read_plan:
     role: context
     prompt: |
-      Read docs/plans/2026-03-19-planck-v01-implementation.md thoroughly.
-      Summarize: 7 chunks, file structure, dependency map, and for each task:
-      key types/structs, test specifications, and implementation requirements.
-      Focus on Chunks 1-5 (Phase A, Rust + Python).
+      精读 docs/plans/2026-03-19-planck-v01-implementation.md。
+      提炼: 7个chunk、文件结构、依赖关系图，以及每个task的:
+      关键类型/结构体、测试规格、实现要求。
+      聚焦Chunks 1-5 (Phase A, Rust + Python)。
 
   scan_repo:
     role: context
@@ -37,22 +35,22 @@ nodes:
       echo "=== Cargo.toml ===" && cat Cargo.toml 2>/dev/null || echo "(not found)" &&
       echo "=== cargo test ===" && cargo test 2>&1 | tail -20 || echo "(cargo test failed or not configured)"
 
-  # ---- project skeleton ----
+  # ---- 项目骨架 ----
   scaffold:
     deps: [read_design, read_plan, scan_repo]
     prompt: |
-      Implement Chunk 1 from the implementation plan: project skeleton.
+      实现Chunk 1: 项目骨架。
 
-      Design context: ${nodes.read_design.output}
-      Implementation plan: ${nodes.read_plan.output}
-      Current repo state: ${nodes.scan_repo.output}
+      设计文档: ${nodes.read_design.output}
+      实现计划: ${nodes.read_plan.output}
+      仓库现状: ${nodes.scan_repo.output}
 
-      Tasks:
+      任务:
       1. Cargo workspace (root Cargo.toml, rust-toolchain.toml)
-      2. planck-core crate with empty module files (plan/topo/cost/algo/sched/template)
-      3. planck-python crate skeleton (PyO3)
+      2. planck-core crate，建空模块文件 (plan/topo/cost/algo/sched/template)
+      3. planck-python crate骨架 (PyO3)
       4. pyproject.toml (maturin)
-      5. Verify: `cargo build` succeeds with zero warnings
+      5. 验证: `cargo build` 零warning通过
 
   gate_build:
     role: gate
@@ -60,36 +58,36 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo build 2>&1"
 
-  # ---- Plan IR + Topology (parallel after scaffold) ----
+  # ---- Plan IR + 拓扑(scaffold后并行) ----
   impl_ir:
     deps: [gate_build]
     prompt: |
-      Implement plan.rs — Plan IR types with C-compatible serialization.
+      实现 plan.rs — Plan IR类型，C-compatible序列化。
 
-      Design: ${nodes.read_design.output}
-      Plan: ${nodes.read_plan.output}
+      设计文档: ${nodes.read_design.output}
+      实现计划: ${nodes.read_plan.output}
 
-      Key types (all repr(C)):
-      - PlanHeader (32 bytes): magic/version/num_ops/num_buffers/num_streams/num_events/num_ranks/my_rank/flags
-      - BufEntry (12 bytes): pool/offset/size
-      - OpEntry (16 bytes): opcode/stream_id/reduce_op/flags/src_buf/dst_buf/dst_rank/wait_event/signal_event
-      - Opcode enum: Put/Signal/Wait/LocalCopy/LocalReduce + 3 fused + Noop
+      关键类型(全部repr(C)):
+      - PlanHeader (32B): magic/version/num_ops/num_buffers/num_streams/num_events/num_ranks/my_rank/flags
+      - BufEntry (12B): pool/offset/size
+      - OpEntry (16B): opcode/stream_id/reduce_op/flags/src_buf/dst_buf/dst_rank/wait_event/signal_event
+      - Opcode enum: Put/Signal/Wait/LocalCopy/LocalReduce + 3个融合变体 + Noop
       - ExecutionPlan: header + Vec<BufEntry> + Vec<OpEntry> + serialize/deserialize
 
-      TDD: write tests first (size assertions, magic, roundtrip), then implement.
+      TDD: 先写测试(size断言、magic验证、roundtrip)，再实现。
 
   impl_topo:
     deps: [gate_build]
     prompt: |
-      Implement topo.rs — 8-card HCCS topology.
+      实现 topo.rs — 8卡HCCS拓扑。
 
-      Plan: ${nodes.read_plan.output}
+      实现计划: ${nodes.read_plan.output}
 
-      Key types: Link {src, dst, bandwidth_gbps, latency_us, transport}, Topology {num_ranks, links}
-      Methods: Topology::hccs_8card() (56 directed links, all-to-all, ~30 GB/s, ~1.5us)
-               has_link(), get_link(), ring_order() -> [0,1,...,7]
+      关键类型: Link {src, dst, bandwidth_gbps, latency_us, transport}, Topology {num_ranks, links}
+      方法: Topology::hccs_8card() (56条有向链路, 全互连, ~30 GB/s, ~1.5us)
+            has_link(), get_link(), ring_order() -> [0,1,...,7]
 
-      TDD: write 3 tests (basics, ring neighbors, link properties), then implement.
+      TDD: 3个测试(基础拓扑、ring邻居、链路属性)，先写测试再实现。
 
   gate_ir_topo:
     role: gate
@@ -97,19 +95,19 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- plan topo 2>&1"
 
-  # ---- Cost Model ----
+  # ---- 代价模型 ----
   impl_cost:
     deps: [gate_ir_topo]
     prompt: |
-      Implement cost.rs — alpha-beta-gamma cost model.
+      实现 cost.rs — alpha-beta-gamma代价模型。
 
-      Plan: ${nodes.read_plan.output}
+      实现计划: ${nodes.read_plan.output}
 
       CostModel {alpha_us, beta_us_per_byte, gamma_us_per_byte}
-      - from_topology(): extract alpha from link latency, beta from 1/bandwidth
+      - from_topology(): 从链路延迟提取alpha，从1/bandwidth提取beta
       - ring_allreduce(msg_size, num_ranks): T = 2(n-1)*alpha + 2(n-1)/n*M*beta + (n-1)/n*M*gamma
 
-      TDD: 3 tests (from_topology, scales_with_size, exact formula check).
+      TDD: 3个测试(from_topology、随规模缩放、精确公式校验)。
 
   gate_cost:
     role: gate
@@ -117,59 +115,59 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- cost 2>&1"
 
-  # ---- Algorithm + Scheduler + Fusion (sequential chain) ----
+  # ---- 算法 + 调度器 + 融合(顺序链) ----
   impl_algo:
     deps: [gate_cost]
     prompt: |
-      Implement algo.rs — Ring AllReduce algorithm decomposition.
+      实现 algo.rs — Ring AllReduce算法分解。
 
-      Plan: ${nodes.read_plan.output}
+      实现计划: ${nodes.read_plan.output}
 
       ring_allreduce(num_ranks, my_rank) -> Vec<AlgoStep>
       AlgoStep {phase: RS|AG, step, send_chunk, recv_chunk, dst_rank, src_rank, needs_reduce}
 
-      Ring formulas:
+      Ring公式:
       - RS step k: send chunk (rank-k+n)%n, recv chunk (rank-k-1+n)%n
       - AG step k: send chunk (rank-k+1+n)%n, recv chunk (rank-k+n)%n
       - dst = (rank+1)%n, src = (rank-1+n)%n
 
-      TDD: 4 tests (step count, send/recv ranks, chunk indices, all chunks covered).
+      TDD: 4个测试(步数、收发rank、chunk索引、全chunk覆盖)。
 
   impl_sched:
     deps: [impl_algo]
     prompt: |
-      Implement sched.rs — Pipeline scheduler with double-buffered receive.
+      实现 sched.rs — 双缓冲流水线调度器。
 
-      Plan: ${nodes.read_plan.output}
+      实现计划: ${nodes.read_plan.output}
 
       schedule(steps, msg_size, pipeline_chunks) -> ScheduleResult {ops, buffers, num_streams}
 
-      Per pipeline chunk c (stream c), per AlgoStep:
+      每个pipeline chunk c (stream c)，每个AlgoStep:
         RS -> Put(send) + Signal(dst) + Wait(src) + LocalReduce(recv->accum)
         AG -> Put(send) + Signal(dst) + Wait(src) + LocalCopy(recv->output)
 
-      Buffer layout: Input (user tensor), Scratch (2 per chunk, double-buffered, size=msg/(chunks*ranks))
+      Buffer布局: Input(用户tensor), Scratch(每chunk 2个, 双缓冲, size=msg/(chunks*ranks))
       stream_id = pipeline_chunk_index
 
-      TDD: 4 tests (produces_ops, uses_c_streams, buffer_sizes, op_sequence_per_stream).
+      TDD: 4个测试(产生ops、使用c个stream、buffer大小、每stream的op序列)。
 
   impl_fusion:
     deps: [impl_sched]
     adaptive: true
     prompt: |
-      Add to plan.rs: instruction fusion pass and top-level compile() function.
+      在plan.rs中添加: 指令融合pass和顶层compile()函数。
 
-      Plan: ${nodes.read_plan.output}
+      实现计划: ${nodes.read_plan.output}
 
-      fuse(ops) -> fused ops. Patterns (greedy, longest first):
+      fuse(ops) -> 融合后ops。模式(贪心, 最长优先):
       - Wait + LocalReduce + Put -> WaitReducePut
       - Wait + LocalReduce + LocalCopy -> WaitReduceCopy
       - Put + Signal -> PutWithSignal
 
       compile(CompileRequest, Topology) -> ExecutionPlan
-      Pipeline: topo -> cost -> algo -> sched -> fuse -> build ExecutionPlan
+      流水线: topo -> cost -> algo -> sched -> fuse -> 构建ExecutionPlan
 
-      TDD: 4 tests (fusion patterns, preserves_unfusable, compile_produces_valid_plan).
+      TDD: 4个测试(融合pattern、保留不可融合指令、compile产出合法plan)。
 
   gate_compiler:
     role: gate
@@ -177,23 +175,23 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core 2>&1"
 
-  # ---- Template + Simulation ----
+  # ---- 模板 + 仿真 ----
   impl_template:
     deps: [gate_compiler]
     prompt: |
-      Implement Chunk 4: template.rs + end-to-end simulation test.
+      实现Chunk 4: template.rs + 端到端仿真测试。
 
-      Plan: ${nodes.read_plan.output}
+      实现计划: ${nodes.read_plan.output}
 
-      1. PlanTemplate: freeze instruction graph, parameterize buffer sizes.
+      1. PlanTemplate: 冻结指令图，参数化buffer大小。
          from_plan(plan, slots) / instantiate(params) -> ExecutionPlan
-         Must be sub-microsecond instantiation.
+         instantiate必须亚微秒级。
 
-      2. Simulation test in plan.rs: compile plans for all 8 ranks,
-         simulate Ring AllReduce on test data (rank r has [r+1, r+1, ...]),
-         verify all ranks produce [36.0, ...] (sum of 1..8).
+      2. plan.rs仿真测试: 为全部8个rank编译plan，
+         在测试数据上模拟Ring AllReduce (rank r持有 [r+1, r+1, ...])，
+         验证所有rank产出 [36.0, ...] (1..8之和)。
 
-      3. Criterion benchmarks: compile <1ms, instantiate <1us.
+      3. Criterion benchmark: compile <1ms, instantiate <1us。
 
   gate_simulation:
     role: gate
@@ -201,24 +199,24 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && cargo test -p planck-core -- simulate 2>&1"
 
-  # ---- PyO3 bindings ----
+  # ---- PyO3绑定 ----
   impl_pyo3:
     deps: [gate_simulation]
     prompt: |
-      Implement Chunk 5: PyO3 bindings.
+      实现Chunk 5: PyO3绑定。
 
-      Plan: ${nodes.read_plan.output}
+      实现计划: ${nodes.read_plan.output}
 
       planck-python/src/lib.rs:
       - PlanCompiler: hccs_8card(), compile_allreduce(), compile_template()
-      - PlanCache: get_allreduce() with HashMap cache
+      - PlanCache: get_allreduce()，用HashMap缓存
       - PyPlanView: num_ranks/my_rank/num_ops/num_buffers/to_bytes()
-      - Release GIL during compilation: py.allow_threads(|| ...)
+      - 编译期释放GIL: py.allow_threads(|| ...)
 
-      python/planck/__init__.py: re-export PlanCompiler, PlanCache
-      tests/test_plan_compile.py: import, compile, cache, template tests
+      python/planck/__init__.py: 重导出PlanCompiler, PlanCache
+      tests/test_plan_compile.py: import、编译、缓存、模板测试
 
-      Build: maturin develop, then pytest.
+      构建: maturin develop，然后pytest。
 
   gate_python:
     role: gate
@@ -226,20 +224,20 @@ nodes:
     type: shell
     cmd: "cd ${vars.repo_dir} && maturin develop 2>&1 && pytest tests/test_plan_compile.py -v 2>&1"
 
-  # ---- report ----
+  # ---- 报告 ----
   report:
     role: meta
     deps: [gate_python]
     prompt: |
-      Write a summary report of Planck v0.1 Phase A implementation.
+      撰写Planck v0.1 Phase A实现总结报告。
 
-      Results:
-      - Skeleton: ${nodes.gate_build.status}
-      - IR + Topo: ${nodes.gate_ir_topo.status}
-      - Cost model: ${nodes.gate_cost.status}
-      - Compiler (algo+sched+fusion): ${nodes.gate_compiler.status}
-      - Simulation: ${nodes.gate_simulation.status}
-      - PyO3 bindings: ${nodes.gate_python.status}
+      各阶段结果:
+      - 骨架: ${nodes.gate_build.status}
+      - IR + 拓扑: ${nodes.gate_ir_topo.status}
+      - 代价模型: ${nodes.gate_cost.status}
+      - 编译器(algo+sched+fusion): ${nodes.gate_compiler.status}
+      - 仿真: ${nodes.gate_simulation.status}
+      - PyO3绑定: ${nodes.gate_python.status}
 
-      Include: what was implemented, test results, compile benchmark numbers,
-      any issues encountered, and readiness for Phase B (C++ on Ascend hardware).
+      包含: 实现内容、测试结果、编译benchmark数据、
+      遇到的问题、Phase B(C++ on Ascend硬件)就绪度评估。
