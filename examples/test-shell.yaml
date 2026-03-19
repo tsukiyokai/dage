@@ -1,0 +1,56 @@
+# test-shell.yaml — pure shell workflow for testing DAG engine
+# Tests: topo ordering, gate short-circuit, variable interpolation
+# Expected results:
+#   echo1       -> success (prints "hello")
+#   echo2       -> success (prints echo1's output)
+#   gate_pass   -> success (exit 0)
+#   gate_fail   -> failed  (exit 1)
+#   after_pass  -> success (runs normally)
+#   after_fail  -> skipped (blocked by gate_fail)
+#   final       -> success (condition met: gate_pass succeeded)
+#   final_skip  -> skipped (condition not met: gate_fail did not succeed)
+
+defaults:
+  type: shell
+
+nodes:
+  echo1:
+    role: context
+    cmd: "echo hello"
+
+  echo2:
+    role: context
+    deps: [echo1]
+    cmd: "echo got:${nodes.echo1.output}"
+
+  gate_pass:
+    role: gate
+    deps: [echo2]
+    cmd: "true"
+
+  gate_fail:
+    role: gate
+    deps: [echo2]
+    cmd: "false"
+
+  after_pass:
+    role: produce
+    deps: [gate_pass]
+    cmd: "echo passed"
+
+  after_fail:
+    role: produce
+    deps: [gate_fail]
+    cmd: "echo this should not run"
+
+  final:
+    role: produce
+    deps: [after_pass]
+    condition: "${nodes.gate_pass.status} == success"
+    cmd: "echo all-done"
+
+  final_skip:
+    role: produce
+    deps: [after_pass]
+    condition: "${nodes.gate_fail.status} == success"
+    cmd: "echo should-skip"

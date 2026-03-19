@@ -1,0 +1,84 @@
+# pgccl.yaml — Performance-Guided CCL optimization workflow
+# A real-world DAG: read context -> implement -> test -> evaluate -> report
+
+defaults:
+  type: claude
+  max_runs: 5
+  timeout: 30m
+
+vars:
+  project: pgccl
+  repo_dir: /Users/shanshan/repo/pgccl
+
+nodes:
+  scan_codebase:
+    role: context
+    prompt: |
+      Scan the codebase and produce a structured summary:
+      1. Project structure and key modules
+      2. Build system and dependencies
+      3. Existing test coverage
+      4. Performance-related code patterns
+      Write findings to notes.
+
+  read_benchmarks:
+    role: context
+    prompt: |
+      Find and analyze all existing benchmarks in the project.
+      Document: benchmark names, what they measure, how to run them,
+      and recent baseline numbers if available.
+
+  plan:
+    role: produce
+    deps: [scan_codebase, read_benchmarks]
+    prompt: |
+      Based on codebase analysis and benchmark data, create an optimization plan.
+
+      Codebase context:
+      ${nodes.scan_codebase.output}
+
+      Benchmark data:
+      ${nodes.read_benchmarks.output}
+
+      Produce a prioritized list of optimization targets with expected impact.
+
+  implement:
+    role: produce
+    deps: [plan]
+    max_runs: 10
+    timeout: 1h
+    prompt: |
+      Implement the top optimization from the plan.
+
+      Plan:
+      ${nodes.plan.output}
+
+      Make minimal, focused changes. Ensure the code compiles.
+
+  test:
+    role: gate
+    deps: [implement]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && make test"
+
+  benchmark:
+    role: evaluate
+    deps: [test]
+    type: shell
+    cmd: "cd ${vars.repo_dir} && make bench"
+
+  report:
+    role: meta
+    deps: [benchmark]
+    prompt: |
+      Write a summary report of the optimization cycle.
+
+      Plan:
+      ${nodes.plan.output}
+
+      Implementation status: ${nodes.implement.status}
+      Test status: ${nodes.test.status}
+      Benchmark results:
+      ${nodes.benchmark.output}
+
+      Include: what changed, test results, performance delta, next steps.
