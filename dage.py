@@ -360,56 +360,60 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
         _log("[dry-run mode]")
     _log("")
 
-    with ThreadPoolExecutor() as pool:
-        for layer_idx, layer in enumerate(layers):
-            # phase 1: filter skip/blocked/condition (serial, pure logic)
-            to_run = []
-            ctx = build_context(wf, results, run_id)
-            for name in layer:
-                node = nodes[name]
+    try:
+        with ThreadPoolExecutor() as pool:
+            for layer_idx, layer in enumerate(layers):
+                # phase 1: filter skip/blocked/condition (serial, pure logic)
+                to_run = []
+                ctx = build_context(wf, results, run_id)
+                for name in layer:
+                    node = nodes[name]
 
-                if from_node and results[name].status == Status.SUCCESS:
-                    _log(f"[{name}] skip (resumed)")
-                    continue
+                    if from_node and results[name].status == Status.SUCCESS:
+                        _log(f"[{name}] skip (resumed)")
+                        continue
 
-                if name in blocked:
-                    results[name] = NodeResult(status=Status.SKIPPED,
-                                               output="blocked by failed gate")
-                    _log(f"[{name}] SKIPPED (gate)")
-                    continue
+                    if name in blocked:
+                        results[name] = NodeResult(status=Status.SKIPPED,
+                                                   output="blocked by failed gate")
+                        _log(f"[{name}] SKIPPED (gate)")
+                        continue
 
-                if should_skip(node, ctx):
-                    results[name] = NodeResult(status=Status.SKIPPED,
-                                               output="condition not met")
-                    _log(f"[{name}] SKIPPED (condition)")
-                    continue
+                    if should_skip(node, ctx):
+                        results[name] = NodeResult(status=Status.SKIPPED,
+                                                   output="condition not met")
+                        _log(f"[{name}] SKIPPED (condition)")
+                        continue
 
-                role_tag = node.role.value.upper()
-                _log(f"[{name}] {role_tag} ({node.type.value}) ...")
-                to_run.append(name)
+                    role_tag = node.role.value.upper()
+                    _log(f"[{name}] {role_tag} ({node.type.value}) ...")
+                    to_run.append(name)
 
-            # phase 2: parallel execution
-            futures = {
-                pool.submit(execute_node, nodes[n], ctx, run_dir,
-                            run_id, repo_dir, dry_run): n
-                for n in to_run
-            }
-            for fut in as_completed(futures):
-                name = futures[fut]
-                results[name] = fut.result()
-                r = results[name]
-                status_icon = "ok" if r.status == Status.SUCCESS else "FAIL"
-                _log(f"[{name}] {status_icon}  {r.duration:.1f}s"
-                     + (f"  retries={r.retries}" if r.retries else ""))
+                # phase 2: parallel execution
+                futures = {
+                    pool.submit(execute_node, nodes[n], ctx, run_dir,
+                                run_id, repo_dir, dry_run): n
+                    for n in to_run
+                }
+                for fut in as_completed(futures):
+                    name = futures[fut]
+                    results[name] = fut.result()
+                    r = results[name]
+                    status_icon = "ok" if r.status == Status.SUCCESS else "FAIL"
+                    _log(f"[{name}] {status_icon}  {r.duration:.1f}s"
+                         + (f"  retries={r.retries}" if r.retries else ""))
 
-            # phase 3: gate propagation after whole layer completes
-            for name in to_run:
-                if nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
-                    downstream = find_blocked(nodes, name)
-                    blocked |= downstream
-                    _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
+                # phase 3: gate propagation after whole layer completes
+                for name in to_run:
+                    if nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
+                        downstream = find_blocked(nodes, name)
+                        blocked |= downstream
+                        _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
 
-    # save state
+    except KeyboardInterrupt:
+        _log("\n[interrupted] saving progress...")
+
+    # save state (both normal exit and interrupt)
     save_state(run_dir, results)
     _log("")
     print_summary(results)
@@ -651,6 +655,9 @@ def main():
 
         results = run_dag(wf, nodes, repo_dir,
                           from_node=args.from_node)
+        # exit 130 if interrupted (pending nodes remain)
+        if any(r.status == Status.PENDING for r in results.values()):
+            sys.exit(130)
         # exit 1 if any non-skipped node failed
         if any(r.status == Status.FAILED for r in results.values()):
             sys.exit(1)
