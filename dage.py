@@ -650,10 +650,11 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                 if not to_run:
                     continue
 
-                # auto-worktree: parallel claude nodes get isolated worktrees
+                # auto-worktree: only for parallel claude nodes that may write files
                 claude_no_wt = [n for n in to_run
                                 if nodes[n].type == NodeType.CLAUDE
-                                and not nodes[n].worktree]
+                                and not nodes[n].worktree
+                                and nodes[n].role != Role.CONTEXT]
                 auto_wt = ({n: f"dage-{run_id}-{n}" for n in claude_no_wt}
                            if len(claude_no_wt) > 1 else {})
                 if auto_wt:
