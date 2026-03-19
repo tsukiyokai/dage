@@ -255,11 +255,14 @@ def _load_skills(names: list[str]) -> str:
     for name in names:
         for pattern in _SKILL_SEARCH_PATHS:
             skill_dir = pattern.format(name=name)
-            # resolve symlinks
             skill_dir = os.path.realpath(skill_dir)
             skill_file = os.path.join(skill_dir, "SKILL.md")
             if os.path.exists(skill_file):
                 content = Path(skill_file).read_text().strip()
+                # rewrite relative paths to absolute (e.g. references/foo.md -> /abs/path/references/foo.md)
+                ref_dir = os.path.join(skill_dir, "references")
+                if os.path.isdir(ref_dir):
+                    content = content.replace("references/", ref_dir + "/")
                 parts.append(f"# Skill: {name}\n\n{content}")
                 _log(f"  skill loaded: {name} ({skill_file})")
                 break
