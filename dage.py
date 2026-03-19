@@ -75,54 +75,46 @@ class NodeResult:
 # ==== YAML Loading =========================================================
 
 def load_workflow(path: str) -> dict:
-    """Load and return raw YAML workflow definition."""
     with open(path) as f:
         wf = yaml.safe_load(f)
     if not isinstance(wf, dict) or "nodes" not in wf:
-        raise ValueError(f"invalid workflow: 'nodes' key required")
+        raise ValueError("invalid workflow: 'nodes' key required")
     return wf
 
 def _build_one_node(name: str, spec: dict, defaults: dict) -> Node:
-    """Build a single Node from spec dict, applying defaults."""
     if not isinstance(spec, dict):
         raise ValueError(f"node '{name}': spec must be a mapping")
     return Node(
-        name     = name,
-        type     = NodeType(spec.get("type", defaults.get("type", "claude"))),
-        role     = Role(spec.get("role", "produce")),
-        deps     = spec.get("deps", []),
-        prompt   = spec.get("prompt", ""),
-        cmd      = spec.get("cmd", ""),
-        condition= spec.get("condition", ""),
-        max_runs = spec.get("max_runs", defaults.get("max_runs", 5)),
-        worktree = spec.get("worktree", ""),
-        timeout  = spec.get("timeout", defaults.get("timeout", "")),
-        retry    = spec.get("retry", 0),
-        adaptive = spec.get("adaptive", False),
+        name      = name,
+        type      = NodeType(spec.get("type", defaults.get("type", "claude"))),
+        role      = Role(spec.get("role", "produce")),
+        deps      = spec.get("deps", []),
+        prompt    = spec.get("prompt", ""),
+        cmd       = spec.get("cmd", ""),
+        condition = spec.get("condition", ""),
+        max_runs  = spec.get("max_runs", defaults.get("max_runs", 5)),
+        worktree  = spec.get("worktree", ""),
+        timeout   = spec.get("timeout", defaults.get("timeout", "")),
+        retry     = spec.get("retry", 0),
+        adaptive  = spec.get("adaptive", False),
     )
 
 def build_nodes(wf: dict) -> dict[str, Node]:
-    """Build Node objects from workflow dict, applying defaults."""
     defaults = wf.get("defaults", {})
-    nodes = {}
-    for name, spec in wf["nodes"].items():
-        nodes[name] = _build_one_node(name, spec, defaults)
-    return nodes
+    return {name: _build_one_node(name, spec, defaults)
+            for name, spec in wf["nodes"].items()}
 
 def validate_workflow(nodes: dict[str, Node]) -> list[str]:
-    """Validate DAG structure. Returns list of errors (empty = valid)."""
+    """Returns list of errors (empty = valid)."""
     errors = []
-    # check dep references
     for name, node in nodes.items():
         for dep in node.deps:
             if dep not in nodes:
                 errors.append(f"node '{name}': unknown dep '{dep}'")
-        # type-specific checks
         if node.type == NodeType.CLAUDE and not node.prompt:
             errors.append(f"node '{name}': claude node requires 'prompt'")
         if node.type == NodeType.SHELL and not node.cmd:
             errors.append(f"node '{name}': shell node requires 'cmd'")
-    # check for cycles
     graph = {name: set(node.deps) for name, node in nodes.items()}
     try:
         ts = TopologicalSorter(graph)
@@ -135,45 +127,36 @@ def validate_workflow(nodes: dict[str, Node]) -> list[str]:
 
 def _resolve_path(ctx: dict, path: str) -> str:
     """Resolve dotted path like 'nodes.harvest.output' against context dict."""
-    parts = path.split(".")
     cur: Any = ctx
-    for part in parts:
+    for part in path.split("."):
         if isinstance(cur, dict):
             if part not in cur:
                 return f"<unresolved:{path}>"
             cur = cur[part]
         elif isinstance(cur, NodeResult):
-            if part == "output":
-                cur = cur.output
-            elif part == "status":
-                cur = cur.status.value
-            else:
-                return f"<unresolved:{path}>"
+            if   part == "output": cur = cur.output
+            elif part == "status": cur = cur.status.value
+            else: return f"<unresolved:{path}>"
         else:
             return f"<unresolved:{path}>"
     return str(cur) if cur is not None else ""
 
 def interpolate(template: str, ctx: dict) -> str:
     """Replace ${...} references with values from context."""
-    def replacer(m: re.Match) -> str:
-        return _resolve_path(ctx, m.group(1))
-    return re.sub(r'\$\{([^}]+)\}', replacer, template)
+    return re.sub(r'\$\{([^}]+)\}', lambda m: _resolve_path(ctx, m.group(1)), template)
 
 # ==== Execution Context ====================================================
 
 def build_context(wf: dict, results: dict[str, NodeResult], run_id: str) -> dict:
-    """Build interpolation context from workflow vars and current results."""
-    ctx: dict[str, Any] = {}
-    ctx["vars"]  = wf.get("vars", {})
-    ctx["nodes"] = results
-    ctx["run"]   = {"id": run_id, "summary": _build_summary(results)}
-    return ctx
+    return {
+        "vars":  wf.get("vars", {}),
+        "nodes": results,
+        "run":   {"id": run_id, "summary": _build_summary(results)},
+    }
 
 def _build_summary(results: dict[str, NodeResult]) -> str:
-    lines = []
-    for name, r in results.items():
-        lines.append(f"  {name}: {r.status.value} ({r.duration:.0f}s)")
-    return "\n".join(lines)
+    return "\n".join(f"  {n}: {r.status.value} ({r.duration:.0f}s)"
+                     for n, r in results.items())
 
 # ==== Topo Sort ============================================================
 
@@ -184,8 +167,7 @@ def topo_layers(nodes: dict[str, Node]) -> list[list[str]]:
     ts.prepare()
     layers = []
     while ts.is_active():
-        ready = list(ts.get_ready())
-        ready.sort()  # deterministic order within layer
+        ready = sorted(ts.get_ready())
         layers.append(ready)
         for name in ready:
             ts.done(name)
@@ -195,7 +177,7 @@ def topo_layers(nodes: dict[str, Node]) -> list[list[str]]:
 
 def next_runnable(nodes: dict[str, Node], results: dict[str, NodeResult],
                   blocked: set[str]) -> list[str]:
-    """Compute currently runnable nodes: deps all done + self PENDING + not blocked."""
+    """Compute currently runnable nodes: deps done + self PENDING + not blocked."""
     runnable = []
     for name, node in nodes.items():
         if results[name].status != Status.PENDING:
@@ -212,12 +194,10 @@ def next_runnable(nodes: dict[str, Node], results: dict[str, NodeResult],
 
 def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
     """Find all nodes transitively downstream of a failed gate."""
-    # build adjacency: parent -> children
     children: dict[str, list[str]] = {n: [] for n in nodes}
     for name, node in nodes.items():
         for dep in node.deps:
             children[dep].append(name)
-    # BFS from failed gate
     blocked: set[str] = set()
     queue = list(children[failed_gate])
     while queue:
@@ -231,10 +211,7 @@ def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
 
 def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
                   timeout=None) -> tuple[int, str, str]:
-    """Run subprocess with [name]-prefixed live output on stderr.
-
-    Returns (returncode, stdout_text, stderr_text).
-    """
+    """Run subprocess with [name]-prefixed live output. Returns (rc, stdout, stderr)."""
     proc = subprocess.Popen(
         cmd, shell=shell, cwd=cwd,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -266,7 +243,6 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
 
 
 def run_shell(node: Node, cmd: str, cwd: str | None = None) -> NodeResult:
-    """Execute a shell command node."""
     t0 = time.monotonic()
     try:
         rc, stdout, stderr = _run_streamed(
@@ -288,17 +264,16 @@ def run_shell(node: Node, cmd: str, cwd: str | None = None) -> NodeResult:
 
 def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
                repo_dir: str, worktree: str = "") -> NodeResult:
-    """Execute a claude node via ccx subprocess."""
     node_dir = os.path.join(run_dir, node.name)
     os.makedirs(node_dir, exist_ok=True)
 
     notes_file = f".dage/runs/{run_id}/{node.name}.notes.md"
     cmd = [
         "ccx",
-        "-p", prompt,
-        "-m", str(node.max_runs),
+        "-p",                  prompt,
+        "-m",                  str(node.max_runs),
         "--completion-signal", "NODE_COMPLETE",
-        "--notes-file", notes_file,
+        "--notes-file",        notes_file,
         "--disable-commits",
         "--disable-branches",
     ]
@@ -317,13 +292,10 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
         )
         elapsed = time.monotonic() - t0
 
-        # read output from notes file
         notes_path = Path(repo_dir) / notes_file
         output = notes_path.read_text().strip() if notes_path.exists() else ""
 
-        # save ccx log
-        log_path = os.path.join(node_dir, "ccx.log")
-        with open(log_path, "w") as f:
+        with open(os.path.join(node_dir, "ccx.log"), "w") as f:
             f.write(f"=== stdout ===\n{stdout}\n")
             f.write(f"=== stderr ===\n{stderr}\n")
             f.write(f"=== returncode: {rc} ===\n")
@@ -338,7 +310,6 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
                           duration=time.monotonic() - t0)
 
 def _parse_timeout(timeout: str) -> float | None:
-    """Parse timeout string like '30m', '1h', '1h30m' to seconds."""
     if not timeout:
         return None
     total = 0.0
@@ -352,24 +323,20 @@ def _parse_timeout(timeout: str) -> float | None:
 # ==== DAG Engine ===========================================================
 
 def should_skip(node: Node, ctx: dict) -> bool:
-    """Check if node's condition evaluates to false."""
     if not node.condition:
         return False
     rendered = interpolate(node.condition, ctx)
-    # simple equality check: "X == Y" or "X != Y"
     if "!=" in rendered:
         left, right = [s.strip() for s in rendered.split("!=", 1)]
         return left == right
     if "==" in rendered:
         left, right = [s.strip() for s in rendered.split("==", 1)]
         return left != right
-    # bare truthy: non-empty string = run
     return not rendered.strip()
 
 def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
                  repo_dir: str, dry_run: bool = False,
                  worktree: str = "") -> NodeResult:
-    """Execute a single node with retry support."""
     if dry_run:
         return NodeResult(status=Status.SUCCESS, output="[dry-run]")
 
@@ -378,19 +345,15 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
     for attempt in range(max_attempts):
         prompt_or_cmd = interpolate(node.prompt or node.cmd, ctx)
-
         if node.type == NodeType.SHELL:
             result = run_shell(node, prompt_or_cmd, cwd=repo_dir)
         else:
             result = run_claude(node, prompt_or_cmd, run_dir, run_id,
                                 repo_dir, worktree=worktree)
-
         last_result = result
         last_result.retries = attempt
-
         if result.status == Status.SUCCESS:
             return result
-
         if attempt < max_attempts - 1:
             _log(f"  retry {attempt + 1}/{node.retry} for '{node.name}'...")
 
@@ -400,7 +363,7 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
 def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
                   layer: list[str]) -> tuple[str, str] | None:
-    """Scan just-executed layer for replan signals from adaptive nodes."""
+    """Scan just-executed layer for [REPLAN: reason] from adaptive nodes."""
     for name in layer:
         if not nodes[name].adaptive:
             continue
@@ -495,7 +458,6 @@ def call_replanner(wf: dict, nodes: dict[str, Node],
                    results: dict[str, NodeResult],
                    trigger: str, reason: str,
                    replan_seq: int, run_dir: str) -> dict | None:
-    """Call AI replanner and return parsed replan instructions."""
     completed = {n for n, r in results.items() if r.status != Status.PENDING}
     pending   = {n for n in nodes if n not in completed}
 
@@ -505,15 +467,13 @@ def call_replanner(wf: dict, nodes: dict[str, Node],
     pend_summary = "\n".join(
         f"  {n}: deps={nodes[n].deps}" for n in sorted(pending))
 
-    trigger_output = results[trigger].output[-2000:]
-
     prompt = _REPLAN_PROMPT.format(
         dage_knowledge = _DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}"),
         task        = wf.get("description", "(no description)"),
         completed   = comp_summary or "  (none)",
         trigger     = trigger,
         reason      = reason,
-        output      = trigger_output,
+        output      = results[trigger].output[-2000:],
         pending     = pend_summary or "  (none)",
         replan_seq  = replan_seq,
         max_replans = wf.get("replan", {}).get("max_replans", 3),
@@ -524,9 +484,8 @@ def call_replanner(wf: dict, nodes: dict[str, Node],
         raw = _extract_yaml(raw)
         result = yaml.safe_load(raw)
         if not isinstance(result, dict):
-            _log(f"[replan] invalid response (not a dict), skipping")
+            _log("[replan] invalid response (not a dict), skipping")
             return None
-        # save raw response for debugging
         with open(os.path.join(run_dir, f"replan-{replan_seq}-raw.yaml"), "w") as f:
             f.write(raw)
         return result
@@ -537,14 +496,13 @@ def call_replanner(wf: dict, nodes: dict[str, Node],
 def apply_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
                  blocked: set[str], replan_result: dict,
                  defaults: dict, run_dir: str, seq: int) -> dict:
-    """Apply replan: remove pending nodes, add new ones. Validates and rolls back on error."""
+    """Apply replan: remove pending nodes, add new ones. Rollback on validation error."""
     removed = []
     for name in replan_result.get("remove", []):
         if name in nodes and results[name].status == Status.PENDING:
             del nodes[name]
             del results[name]
             blocked.discard(name)
-            # clean deps referencing removed nodes
             for n in nodes.values():
                 if name in n.deps:
                     n.deps.remove(name)
@@ -560,14 +518,11 @@ def apply_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
             except Exception as e:
                 _log(f"[replan] failed to build node '{name}': {e}")
 
-    # validate resulting DAG
     errors = validate_workflow(nodes)
     if errors:
-        # rollback: remove added, restore removed
         for name in added:
             del nodes[name]
             del results[name]
-        # cannot fully restore removed nodes — log warning
         _log(f"[replan] rejected (validation errors): {errors}")
         if removed:
             _log(f"[replan] warning: {len(removed)} removed nodes lost in rollback")
@@ -576,6 +531,8 @@ def apply_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
     event = {"seq": seq, "added": added, "removed": removed}
     _save_json(os.path.join(run_dir, f"replan-{seq}.json"), event)
     return event
+
+# ==== DAG Runner ===========================================================
 
 def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
             dry_run: bool = False, from_node: str | None = None) -> dict[str, NodeResult]:
@@ -587,20 +544,17 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     results: dict[str, NodeResult] = {name: NodeResult() for name in nodes}
     blocked: set[str] = set()
 
-    # load prior results for --from resume
     if from_node:
         results, blocked = _load_resume_state(nodes, from_node, repo_dir)
         resumed = [n for n, r in results.items() if r.status == Status.SUCCESS]
         if resumed:
             _log(f"resumed: {sorted(resumed)}")
 
-    # replan config
     replan_cfg   = wf.get("replan", {})
     max_replans  = replan_cfg.get("max_replans", 3)
     max_nodes    = replan_cfg.get("max_nodes", 50)
     replan_count = 0
 
-    # snapshot original nodes for audit trail
     _save_json(os.path.join(run_dir, "original-nodes.json"),
                {n: _node_to_dict(nodes[n]) for n in nodes})
 
@@ -616,26 +570,23 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                 if not layer:
                     break
 
-                # phase 1: filter condition (serial, pure logic)
+                # phase 1: condition filter
                 to_run = []
                 ctx = build_context(wf, results, run_id)
                 for name in layer:
                     node = nodes[name]
-
                     if should_skip(node, ctx):
                         results[name] = NodeResult(status=Status.SKIPPED,
                                                    output="condition not met")
                         _log(f"[{name}] SKIPPED (condition)")
                         continue
-
-                    role_tag = node.role.value.upper()
-                    _log(f"[{name}] {role_tag} ({node.type.value}) ...")
+                    _log(f"[{name}] {node.role.value.upper()} ({node.type.value}) ...")
                     to_run.append(name)
 
                 if not to_run:
-                    continue  # all skipped by condition, loop picks up next wave
+                    continue
 
-                # auto-worktree for parallel claude nodes
+                # auto-worktree: parallel claude nodes get isolated worktrees
                 claude_no_wt = [n for n in to_run
                                 if nodes[n].type == NodeType.CLAUDE
                                 and not nodes[n].worktree]
@@ -655,11 +606,11 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     name = futures[fut]
                     results[name] = fut.result()
                     r = results[name]
-                    status_icon = "ok" if r.status == Status.SUCCESS else "FAIL"
-                    _log(f"[{name}] {status_icon}  {r.duration:.1f}s"
+                    icon = "ok" if r.status == Status.SUCCESS else "FAIL"
+                    _log(f"[{name}] {icon}  {r.duration:.1f}s"
                          + (f"  retries={r.retries}" if r.retries else ""))
 
-                # phase 3: gate propagation — mark blocked nodes SKIPPED immediately
+                # phase 3: gate propagation
                 for name in to_run:
                     if nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
                         downstream = find_blocked(nodes, name)
@@ -671,7 +622,7 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                                                         output="blocked by failed gate")
                                 _log(f"[{b}] SKIPPED (gate)")
 
-                # phase 4: adaptive replan check
+                # phase 4: adaptive replan
                 if replan_count < max_replans and len(nodes) < max_nodes:
                     signal = detect_replan(nodes, results, to_run)
                     if signal:
@@ -692,23 +643,20 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     except KeyboardInterrupt:
         _log("\n[interrupted] saving progress...")
 
-    # save state (both normal exit and interrupt)
     save_state(run_dir, results)
     _log("")
     print_summary(results)
     save_latest_link(repo_dir, run_id)
-
     return results
 
 def _load_resume_state(nodes: dict[str, Node], from_node: str,
                        repo_dir: str) -> tuple[dict[str, NodeResult], set[str]]:
-    """Load results from latest run for --from resume."""
     results = {name: NodeResult() for name in nodes}
     blocked: set[str] = set()
 
     latest = _find_latest_run(repo_dir)
     if not latest:
-        _log(f"warning: no prior run found, starting from scratch")
+        _log("warning: no prior run found, starting from scratch")
         return results, blocked
 
     state_file = os.path.join(latest, "results.json")
@@ -718,7 +666,6 @@ def _load_resume_state(nodes: dict[str, Node], from_node: str,
     with open(state_file) as f:
         saved = json.load(f)
 
-    # mark all nodes before from_node as their saved status
     layers = topo_layers(nodes)
     reached = False
     for layer in layers:
@@ -730,23 +677,20 @@ def _load_resume_state(nodes: dict[str, Node], from_node: str,
                 s = saved[name]
                 results[name] = NodeResult(
                     status   = Status(s["status"]),
-                    output   = "",  # don't carry full output, re-read if needed
+                    output   = "",
                     duration = s.get("duration", 0),
                 )
         if reached:
             break
-
     return results, blocked
 
 # ==== State Persistence ====================================================
 
 def _save_json(path: str, data):
-    """Write data as formatted JSON."""
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 def _node_to_dict(node: Node) -> dict:
-    """Serialize Node to plain dict for JSON snapshots."""
     d = {"type": node.type.value, "role": node.role.value}
     if node.deps:      d["deps"]      = node.deps
     if node.prompt:    d["prompt"]    = node.prompt
@@ -758,16 +702,11 @@ def _node_to_dict(node: Node) -> dict:
     return d
 
 def save_state(run_dir: str, results: dict[str, NodeResult]):
-    """Save run results to JSON."""
-    data = {name: r.to_dict() for name, r in results.items()}
-    path = os.path.join(run_dir, "results.json")
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    _save_json(os.path.join(run_dir, "results.json"),
+               {name: r.to_dict() for name, r in results.items()})
 
 def save_latest_link(repo_dir: str, run_id: str):
-    """Write latest run ID for quick lookup."""
-    path = os.path.join(repo_dir, ".dage", "latest")
-    with open(path, "w") as f:
+    with open(os.path.join(repo_dir, ".dage", "latest"), "w") as f:
         f.write(run_id)
 
 def _find_latest_run(repo_dir: str) -> str | None:
@@ -785,7 +724,6 @@ def _log(msg: str):
     print(msg, file=sys.stderr)
 
 def print_summary(results: dict[str, NodeResult]):
-    """Print execution summary table."""
     _log("=" * 60)
     _log(f"{'Node':<20} {'Status':<10} {'Time':>8}  {'Retries':>7}")
     _log("-" * 60)
@@ -802,7 +740,6 @@ def print_summary(results: dict[str, NodeResult]):
     _log("=" * 60)
 
 def print_plan(nodes: dict[str, Node]):
-    """Print dry-run execution plan."""
     layers = topo_layers(nodes)
     _log("Execution plan:")
     _log("")
@@ -810,13 +747,12 @@ def print_plan(nodes: dict[str, Node]):
         _log(f"  layer {i}:")
         for name in layer:
             node = nodes[name]
-            deps = f" <- [{', '.join(node.deps)}]" if node.deps else ""
+            deps  = f" <- [{', '.join(node.deps)}]" if node.deps else ""
             adapt = " [adaptive]" if node.adaptive else ""
             _log(f"    {name} ({node.type.value}/{node.role.value}){adapt}{deps}")
     _log("")
 
 def print_status(repo_dir: str):
-    """Print status of the latest run."""
     run_dir = _find_latest_run(repo_dir)
     if not run_dir:
         _log("no runs found")
@@ -827,8 +763,7 @@ def print_status(repo_dir: str):
         return
     with open(state_file) as f:
         data = json.load(f)
-    run_id = os.path.basename(run_dir)
-    _log(f"latest run: {run_id}")
+    _log(f"latest run: {os.path.basename(run_dir)}")
     _log("")
     _log(f"{'Node':<20} {'Status':<10} {'Time':>8}  {'Retries':>7}")
     _log("-" * 60)
@@ -916,8 +851,8 @@ Think step by step, making all decisions autonomously.
 5. GATES: After every implementation/coding subtask, add a shell verification
    step (test/build/lint) as a gate. Gate failure blocks all downstream work.
 6. RESOURCE ESTIMATE: For each claude subtask, estimate complexity:
-   - Light (reading/summarizing): max_runs 5, timeout 30m
-   - Medium (analysis/planning): max_runs 8, timeout 30m
+   - Light (reading/summarizing): max_runs 1-3
+   - Medium (analysis/planning): max_runs 5-8, timeout 30m
    - Heavy (implementation/coding): max_runs 10+, timeout 45m-1h
 
 Output a structured design document. Be specific about what each subtask does,
@@ -927,7 +862,6 @@ Task: """
 
 
 def _call_claude(prompt: str, timeout: int = 120) -> str:
-    """Call claude CLI with a prompt, return stdout text."""
     try:
         proc = subprocess.run(
             ["claude", "-p", prompt, "--output-format", "text"],
@@ -943,16 +877,11 @@ def _call_claude(prompt: str, timeout: int = 120) -> str:
 
 
 def generate_plan(description: str) -> tuple[str, str]:
-    """Two-phase plan generation: brainstorm design, then generate YAML.
-
-    Returns (yaml_text, design_text).
-    """
-    # phase 1: brainstorm — explore task space, make design decisions
+    """Two-phase plan generation: brainstorm design, then generate YAML."""
     _log("  phase 1: brainstorming...")
     design = _call_claude(_BRAINSTORM_PROMPT + description, timeout=120)
     _log(f"  design: {len(design)} chars")
 
-    # phase 2: generate YAML from design + schema
     _log("  phase 2: generating YAML...")
     gen_prompt = _PLAN_PROMPT + (
         f"\nDesign document (from brainstorming phase):\n{design}\n\n"
@@ -963,7 +892,6 @@ def generate_plan(description: str) -> tuple[str, str]:
 
 
 def _extract_yaml(text: str) -> str:
-    """Strip markdown fences if present."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -1015,7 +943,6 @@ def main():
                 _log(f"error: {e}")
             sys.exit(1)
 
-        # resolve repo_dir from vars or CLI
         repo_dir = os.path.abspath(
             wf.get("vars", {}).get("repo_dir", args.repo_dir)
         )
@@ -1024,12 +951,9 @@ def main():
             print_plan(nodes)
             return
 
-        results = run_dag(wf, nodes, repo_dir,
-                          from_node=args.from_node)
-        # exit 130 if interrupted (pending nodes remain)
+        results = run_dag(wf, nodes, repo_dir, from_node=args.from_node)
         if any(r.status == Status.PENDING for r in results.values()):
-            sys.exit(130)
-        # exit 1 if any non-skipped node failed
+            sys.exit(130)  # interrupted
         if any(r.status == Status.FAILED for r in results.values()):
             sys.exit(1)
 
@@ -1045,8 +969,7 @@ def main():
         print_plan(nodes)
 
     elif args.command == "status":
-        repo_dir = os.path.abspath(args.repo_dir)
-        print_status(repo_dir)
+        print_status(os.path.abspath(args.repo_dir))
 
     elif args.command == "plan":
         _log("generating workflow...")
@@ -1056,7 +979,6 @@ def main():
             _log(f"error: {e}")
             sys.exit(1)
 
-        # save brainstorm design to .dage/plans/
         plan_dir = os.path.join(".dage", "plans")
         os.makedirs(plan_dir, exist_ok=True)
         design_file = os.path.join(plan_dir,
@@ -1065,7 +987,6 @@ def main():
             f.write(f"# Design: {args.description}\n\n{design}\n")
         _log(f"  design: {design_file}")
 
-        # validate and preview
         try:
             wf     = yaml.safe_load(raw)
             nodes  = build_nodes(wf)
