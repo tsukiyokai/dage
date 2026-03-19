@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dager — DAG-based Agent Workflow Orchestrator.
+"""dage — DAG-based Agent Workflow Orchestrator.
 
 Orchestrates multi-step AI agent workflows defined as YAML DAGs.
 Each node is either a `claude` node (runs ccx subprocess) or a `shell` node.
@@ -235,7 +235,7 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
     node_dir = os.path.join(run_dir, node.name)
     os.makedirs(node_dir, exist_ok=True)
 
-    notes_file = f".dager/runs/{run_id}/{node.name}.notes.md"
+    notes_file = f".dage/runs/{run_id}/{node.name}.notes.md"
     cmd = [
         "ccx",
         "-p", prompt,
@@ -342,7 +342,7 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
             dry_run: bool = False, from_node: str | None = None) -> dict[str, NodeResult]:
     """Execute the full DAG in topological order."""
     run_id  = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = os.path.join(repo_dir, ".dager", "runs", run_id)
+    run_dir = os.path.join(repo_dir, ".dage", "runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
 
     results: dict[str, NodeResult] = {name: NodeResult() for name in nodes}
@@ -458,15 +458,15 @@ def save_state(run_dir: str, results: dict[str, NodeResult]):
 
 def save_latest_link(repo_dir: str, run_id: str):
     """Write latest run ID for quick lookup."""
-    path = os.path.join(repo_dir, ".dager", "latest")
+    path = os.path.join(repo_dir, ".dage", "latest")
     with open(path, "w") as f:
         f.write(run_id)
 
 def _find_latest_run(repo_dir: str) -> str | None:
-    latest_file = os.path.join(repo_dir, ".dager", "latest")
+    latest_file = os.path.join(repo_dir, ".dage", "latest")
     if os.path.exists(latest_file):
         run_id = open(latest_file).read().strip()
-        run_dir = os.path.join(repo_dir, ".dager", "runs", run_id)
+        run_dir = os.path.join(repo_dir, ".dage", "runs", run_id)
         if os.path.isdir(run_dir):
             return run_dir
     return None
@@ -531,7 +531,7 @@ def print_status(repo_dir: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="dager",
+        prog="dage",
         description="DAG-based Agent Workflow Orchestrator",
     )
     sub = parser.add_subparsers(dest="command")

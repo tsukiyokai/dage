@@ -1,15 +1,15 @@
-# dager
+# dage
 
 DAG-based Agent Workflow Orchestrator. 将多个AI agent步骤按DAG拓扑序编排执行。
 
 ## 用法
 
 ```bash
-dager run workflow.yaml              # 执行workflow
-dager run workflow.yaml --dry-run    # 显示执行计划
-dager run workflow.yaml --from test  # 从test节点恢复
-dager validate workflow.yaml         # 验证YAML
-dager status                         # 查看最近运行结果
+dage run workflow.yaml              # 执行workflow
+dage run workflow.yaml --dry-run    # 显示执行计划
+dage run workflow.yaml --from test  # 从test节点恢复
+dage validate workflow.yaml         # 验证YAML
+dage status                         # 查看最近运行结果
 ```
 
 ## Workflow YAML
