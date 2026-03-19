@@ -535,6 +535,70 @@ def print_status(repo_dir: str):
         _log(f"{name:<20} {r['status']:<10} {r['duration']:>7.1f}s  {r['retries']:>7}")
     _log("-" * 60)
 
+# ==== Plan Generation ======================================================
+
+_PLAN_PROMPT = """\
+You are a workflow planner for dage, a DAG-based workflow orchestrator.
+Turn the task description into a valid dage YAML workflow.
+
+Schema:
+  nodes:
+    <name>:                         # snake_case
+      type: shell | claude          # shell=command, claude=AI reasoning
+      role: produce|context|gate|evaluate|gc  # gate failure blocks downstream
+      deps: [a, b]                  # data/order dependencies
+      cmd: "..."                    # shell nodes
+      prompt: "..."                 # claude nodes, supports interpolation
+      condition: "expr"             # skip if false
+      retry: N                      # optional retry count
+      timeout: "30m"                # e.g. 1h, 5m, 30s
+  vars:
+    key: value                      # global vars
+
+Interpolation: ${vars.KEY}, ${nodes.NAME.output}, ${nodes.NAME.status}
+
+Rules:
+- deps only when B needs A's output or A must succeed first
+- maximize parallelism: independent tasks have no deps between them
+- gate role for checks that must pass (tests, lint, validation)
+- shell for deterministic commands, claude for reasoning/analysis
+- short descriptive snake_case node names
+
+Output ONLY valid YAML. No fences, no commentary.
+
+Task: """
+
+
+def generate_plan(description: str) -> str:
+    """Call claude CLI to generate a workflow YAML from description."""
+    prompt = _PLAN_PROMPT + description
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--output-format", "text"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("'claude' CLI not found — install Claude Code first")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("claude timed out (120s)")
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"claude failed: {proc.stderr.strip()}")
+    return _extract_yaml(proc.stdout)
+
+
+def _extract_yaml(text: str) -> str:
+    """Strip markdown fences if present."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
 # ==== CLI ==================================================================
 
 def main():
@@ -558,6 +622,12 @@ def main():
     # status
     p_st = sub.add_parser("status", help="show latest run status")
     p_st.add_argument("--repo-dir", default=".", help="repo working directory")
+
+    # plan
+    p_plan = sub.add_parser("plan", help="AI-generate workflow from description")
+    p_plan.add_argument("description", help="task description in natural language")
+    p_plan.add_argument("-o", "--output", default="workflow.yaml",
+                        help="output file (default: workflow.yaml)")
 
     args = parser.parse_args()
 
@@ -599,6 +669,31 @@ def main():
     elif args.command == "status":
         repo_dir = os.path.abspath(args.repo_dir)
         print_status(repo_dir)
+
+    elif args.command == "plan":
+        _log("generating workflow...")
+        try:
+            raw = generate_plan(args.description)
+        except RuntimeError as e:
+            _log(f"error: {e}")
+            sys.exit(1)
+
+        # validate and preview
+        try:
+            wf     = yaml.safe_load(raw)
+            nodes  = build_nodes(wf)
+            errors = validate_workflow(nodes)
+            if errors:
+                for e in errors:
+                    _log(f"  warning: {e}")
+            else:
+                print_plan(nodes)
+        except Exception as e:
+            _log(f"warning: validation failed: {e}")
+
+        with open(args.output, "w") as f:
+            f.write(raw + "\n")
+        _log(f"wrote {args.output}")
 
     else:
         parser.print_help()

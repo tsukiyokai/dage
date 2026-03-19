@@ -5,6 +5,7 @@ DAG-based Agent Workflow Orchestrator. 将多个AI agent步骤按DAG拓扑序编
 ## 用法
 
 ```bash
+dage plan "描述你的任务"             # AI自动生成workflow YAML
 dage run workflow.yaml              # 执行workflow
 dage run workflow.yaml --dry-run    # 显示执行计划
 dage run workflow.yaml --from test  # 从test节点恢复
@@ -67,3 +68,4 @@ nodes:
 
 - v0.1.0: 初始实现 — DAG引擎, shell/claude执行器, gate短路, 变量插值, --from恢复
 - v0.2.0: 层内并行执行 — 同层无依赖节点通过ThreadPoolExecutor并发运行
+- v0.3.0: `dage plan` — AI自动生成workflow YAML，validate后展示执行计划
