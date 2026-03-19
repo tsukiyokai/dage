@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -209,20 +210,56 @@ def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
 
 # ==== Executors ============================================================
 
+def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
+                  timeout=None) -> tuple[int, str, str]:
+    """Run subprocess with [name]-prefixed live output on stderr.
+
+    Returns (returncode, stdout_text, stderr_text).
+    """
+    proc = subprocess.Popen(
+        cmd, shell=shell, cwd=cwd,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    stdout_buf: list[str] = []
+    stderr_buf: list[str] = []
+
+    def _drain(stream, buf):
+        for line in stream:
+            buf.append(line)
+            _log(f"  {name} | {line.rstrip()}")
+
+    t1 = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf), daemon=True)
+    t2 = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf), daemon=True)
+    t1.start()
+    t2.start()
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        raise
+
+    t1.join()
+    t2.join()
+    return proc.returncode, "".join(stdout_buf), "".join(stderr_buf)
+
+
 def run_shell(node: Node, cmd: str, cwd: str | None = None) -> NodeResult:
     """Execute a shell command node."""
     t0 = time.monotonic()
     try:
-        proc = subprocess.run(
-            cmd, shell=True, cwd=cwd,
-            capture_output=True, text=True, timeout=_parse_timeout(node.timeout),
+        rc, stdout, stderr = _run_streamed(
+            node.name, cmd, shell=True, cwd=cwd,
+            timeout=_parse_timeout(node.timeout),
         )
         elapsed = time.monotonic() - t0
-        output = proc.stdout.strip()
-        if proc.returncode != 0 and proc.stderr:
-            output += f"\n[stderr] {proc.stderr.strip()}"
+        output = stdout.strip()
+        if rc != 0 and stderr:
+            output += f"\n[stderr] {stderr.strip()}"
         return NodeResult(
-            status   = Status.SUCCESS if proc.returncode == 0 else Status.FAILED,
+            status   = Status.SUCCESS if rc == 0 else Status.FAILED,
             output   = output,
             duration = elapsed,
         )
@@ -254,11 +291,9 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
     t0 = time.monotonic()
     try:
         timeout_s = _parse_timeout(node.timeout)
-        # add buffer beyond ccx's own timeout so ccx can clean up
         outer_timeout = timeout_s + 120 if timeout_s else None
-        proc = subprocess.run(
-            cmd, cwd=repo_dir,
-            capture_output=True, text=True, timeout=outer_timeout,
+        rc, stdout, stderr = _run_streamed(
+            node.name, cmd, cwd=repo_dir, timeout=outer_timeout,
         )
         elapsed = time.monotonic() - t0
 
@@ -269,12 +304,12 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
         # save ccx log
         log_path = os.path.join(node_dir, "ccx.log")
         with open(log_path, "w") as f:
-            f.write(f"=== stdout ===\n{proc.stdout}\n")
-            f.write(f"=== stderr ===\n{proc.stderr}\n")
-            f.write(f"=== returncode: {proc.returncode} ===\n")
+            f.write(f"=== stdout ===\n{stdout}\n")
+            f.write(f"=== stderr ===\n{stderr}\n")
+            f.write(f"=== returncode: {rc} ===\n")
 
         return NodeResult(
-            status   = Status.SUCCESS if proc.returncode == 0 else Status.FAILED,
+            status   = Status.SUCCESS if rc == 0 else Status.FAILED,
             output   = output,
             duration = elapsed,
         )
