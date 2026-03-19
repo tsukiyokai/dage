@@ -268,7 +268,7 @@ def run_shell(node: Node, cmd: str, cwd: str | None = None) -> NodeResult:
                           duration=time.monotonic() - t0)
 
 def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
-               repo_dir: str) -> NodeResult:
+               repo_dir: str, worktree: str = "") -> NodeResult:
     """Execute a claude node via ccx subprocess."""
     node_dir = os.path.join(run_dir, node.name)
     os.makedirs(node_dir, exist_ok=True)
@@ -283,8 +283,9 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
         "--disable-commits",
         "--disable-branches",
     ]
-    if node.worktree:
-        cmd += ["--worktree", node.worktree]
+    wt = worktree or node.worktree
+    if wt:
+        cmd += ["--worktree", wt]
     if node.timeout:
         cmd += ["--max-duration", node.timeout]
 
@@ -347,7 +348,8 @@ def should_skip(node: Node, ctx: dict) -> bool:
     return not rendered.strip()
 
 def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
-                 repo_dir: str, dry_run: bool = False) -> NodeResult:
+                 repo_dir: str, dry_run: bool = False,
+                 worktree: str = "") -> NodeResult:
     """Execute a single node with retry support."""
     if dry_run:
         return NodeResult(status=Status.SUCCESS, output="[dry-run]")
@@ -361,7 +363,8 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
         if node.type == NodeType.SHELL:
             result = run_shell(node, prompt_or_cmd, cwd=repo_dir)
         else:
-            result = run_claude(node, prompt_or_cmd, run_dir, run_id, repo_dir)
+            result = run_claude(node, prompt_or_cmd, run_dir, run_id,
+                                repo_dir, worktree=worktree)
 
         last_result = result
         last_result.retries = attempt
@@ -424,10 +427,20 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     _log(f"[{name}] {role_tag} ({node.type.value}) ...")
                     to_run.append(name)
 
+                # auto-worktree for parallel claude nodes
+                claude_no_wt = [n for n in to_run
+                                if nodes[n].type == NodeType.CLAUDE
+                                and not nodes[n].worktree]
+                auto_wt = ({n: f"dage-{run_id}-{n}" for n in claude_no_wt}
+                           if len(claude_no_wt) > 1 else {})
+                if auto_wt:
+                    _log(f"  auto-worktree: {sorted(auto_wt)}")
+
                 # phase 2: parallel execution
                 futures = {
                     pool.submit(execute_node, nodes[n], ctx, run_dir,
-                                run_id, repo_dir, dry_run): n
+                                run_id, repo_dir, dry_run,
+                                worktree=auto_wt.get(n, "")): n
                     for n in to_run
                 }
                 for fut in as_completed(futures):
