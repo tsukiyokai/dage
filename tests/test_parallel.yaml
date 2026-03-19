@@ -1,0 +1,14 @@
+nodes:
+  a:
+    type: shell
+    cmd: "sleep 1 && echo done-a"
+  b:
+    type: shell
+    cmd: "sleep 1 && echo done-b"
+  c:
+    type: shell
+    cmd: "sleep 1 && echo done-c"
+  d:
+    type: shell
+    cmd: "echo done-d"
+    deps: [a, b, c]

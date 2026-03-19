@@ -1,0 +1,16 @@
+nodes:
+  check:
+    type: shell
+    role: gate
+    cmd: "exit 1"
+  a:
+    type: shell
+    cmd: "sleep 1 && echo done-a"
+  b:
+    type: shell
+    cmd: "echo should-be-blocked"
+    deps: [check]
+  c:
+    type: shell
+    cmd: "echo also-blocked"
+    deps: [b]

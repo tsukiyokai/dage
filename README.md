@@ -66,3 +66,4 @@ nodes:
 ## Changelog
 
 - v0.1.0: 初始实现 — DAG引擎, shell/claude执行器, gate短路, 变量插值, --from恢复
+- v0.2.0: 层内并行执行 — 同层无依赖节点通过ThreadPoolExecutor并发运行

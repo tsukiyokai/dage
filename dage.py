@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from graphlib import TopologicalSorter, CycleError
@@ -359,47 +360,54 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
         _log("[dry-run mode]")
     _log("")
 
-    for layer_idx, layer in enumerate(layers):
-        for name in layer:
-            node = nodes[name]
-
-            # skip if resuming past nodes
-            if from_node and results[name].status == Status.SUCCESS:
-                _log(f"[{name}] skip (resumed)")
-                continue
-
-            # skip if blocked by upstream gate
-            if name in blocked:
-                results[name] = NodeResult(status=Status.SKIPPED,
-                                           output="blocked by failed gate")
-                _log(f"[{name}] SKIPPED (gate)")
-                continue
-
-            # build context with current results
+    with ThreadPoolExecutor() as pool:
+        for layer_idx, layer in enumerate(layers):
+            # phase 1: filter skip/blocked/condition (serial, pure logic)
+            to_run = []
             ctx = build_context(wf, results, run_id)
+            for name in layer:
+                node = nodes[name]
 
-            # check condition
-            if should_skip(node, ctx):
-                results[name] = NodeResult(status=Status.SKIPPED,
-                                           output="condition not met")
-                _log(f"[{name}] SKIPPED (condition)")
-                continue
+                if from_node and results[name].status == Status.SUCCESS:
+                    _log(f"[{name}] skip (resumed)")
+                    continue
 
-            # execute
-            role_tag = node.role.value.upper()
-            _log(f"[{name}] {role_tag} ({node.type.value}) ...")
-            results[name] = execute_node(node, ctx, run_dir, run_id,
-                                         repo_dir, dry_run)
-            r = results[name]
-            status_icon = "ok" if r.status == Status.SUCCESS else "FAIL"
-            _log(f"[{name}] {status_icon}  {r.duration:.1f}s"
-                 + (f"  retries={r.retries}" if r.retries else ""))
+                if name in blocked:
+                    results[name] = NodeResult(status=Status.SKIPPED,
+                                               output="blocked by failed gate")
+                    _log(f"[{name}] SKIPPED (gate)")
+                    continue
 
-            # gate failure propagation
-            if node.role == Role.GATE and r.status == Status.FAILED:
-                downstream = find_blocked(nodes, name)
-                blocked |= downstream
-                _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
+                if should_skip(node, ctx):
+                    results[name] = NodeResult(status=Status.SKIPPED,
+                                               output="condition not met")
+                    _log(f"[{name}] SKIPPED (condition)")
+                    continue
+
+                role_tag = node.role.value.upper()
+                _log(f"[{name}] {role_tag} ({node.type.value}) ...")
+                to_run.append(name)
+
+            # phase 2: parallel execution
+            futures = {
+                pool.submit(execute_node, nodes[n], ctx, run_dir,
+                            run_id, repo_dir, dry_run): n
+                for n in to_run
+            }
+            for fut in as_completed(futures):
+                name = futures[fut]
+                results[name] = fut.result()
+                r = results[name]
+                status_icon = "ok" if r.status == Status.SUCCESS else "FAIL"
+                _log(f"[{name}] {status_icon}  {r.duration:.1f}s"
+                     + (f"  retries={r.retries}" if r.retries else ""))
+
+            # phase 3: gate propagation after whole layer completes
+            for name in to_run:
+                if nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
+                    downstream = find_blocked(nodes, name)
+                    blocked |= downstream
+                    _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
 
     # save state
     save_state(run_dir, results)
