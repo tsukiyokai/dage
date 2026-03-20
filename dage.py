@@ -1136,16 +1136,17 @@ class DageDisplay:
                       subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
                       border_style="blue", padding=(0, 1))
 
-        if not self.log_buf:
-            return panel
         try:
             term_h = os.get_terminal_size().lines
         except OSError:
             term_h = 40
-        # panel height ≈ layers + header/footer/status (6 lines overhead)
         panel_h = min(len(topo_layers(self.nodes)), 14) + 6
         log_h   = max(term_h - panel_h - 1, 5)
-        log_text = Text.from_ansi("\n".join(self.log_buf[-log_h:]))
+        visible = self.log_buf[-log_h:]
+        # pad to fill terminal
+        if len(visible) < log_h:
+            visible = visible + [""] * (log_h - len(visible))
+        log_text = Text.from_ansi("\n".join(visible))
         return Group(panel, log_text)
 
 _display: DageDisplay | None = None
