@@ -1,5 +1,6 @@
 # test-shell.yaml — pure shell workflow for testing DAG engine
 # Tests: topo ordering, gate short-circuit, variable interpolation
+autofix: false
 # Expected results:
 #   echo1       -> success (prints "hello")
 #   echo2       -> success (prints echo1's output)

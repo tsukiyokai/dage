@@ -214,8 +214,10 @@ def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
 def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
                   timeout=None) -> tuple[int, str, str]:
     """Run subprocess with [name]-prefixed live output. Returns (rc, stdout, stderr)."""
+    env = os.environ.copy()
+    env["CCX_MANAGED"] = "1"
     proc = subprocess.Popen(
-        cmd, shell=shell, cwd=cwd,
+        cmd, shell=shell, cwd=cwd, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     stdout_buf: list[str] = []
@@ -390,6 +392,95 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
             _log(f"  retry {attempt + 1}/{node.retry} for '{node.name}'...")
 
     return last_result
+
+# ==== Gate Auto-commit =====================================================
+
+def _auto_commit(gate_name: str, nodes: dict[str, Node],
+                 repo_dir: str, push: bool = False):
+    """Commit all changes after a gate passes. Optionally push."""
+    # collect upstream produce node names for commit message
+    gate = nodes[gate_name]
+    upstreams = [d for d in gate.deps
+                 if d in nodes and nodes[d].role != Role.GATE]
+
+    msg = f"feat({gate_name}): {', '.join(upstreams)} verified"
+
+    try:
+        # check if there are changes to commit
+        rc, out, _ = _run_streamed(
+            f"_commit_{gate_name}",
+            "git diff --quiet HEAD 2>/dev/null; echo $?",
+            shell=True, cwd=repo_dir)
+        has_changes = out.strip() != "0"
+        if not has_changes:
+            return
+
+        _run_streamed(f"_commit_{gate_name}",
+                      f'git add -A && git commit -m "{msg}"',
+                      shell=True, cwd=repo_dir)
+        _log(f"[commit] {msg}")
+
+        if push:
+            _run_streamed(f"_push_{gate_name}",
+                          "git push", shell=True, cwd=repo_dir)
+            _log(f"[push] ok")
+    except Exception as e:
+        _log(f"[commit] failed: {e}")
+
+# ==== Gate Autofix =========================================================
+
+_AUTOFIX_PROMPT = """\
+A build/test gate failed. Diagnose and fix the issue.
+
+Gate command:
+{cmd}
+
+Error output:
+{error_output}
+{upstream_context}
+Instructions:
+1. Read the error carefully, identify root cause
+2. Fix it (install tools, fix code, etc.)
+3. Run the gate command yourself to verify
+"""
+
+def _autofix_gate(gate: Node, gate_result: NodeResult,
+                  nodes: dict[str, Node], ctx: dict,
+                  wf: dict, run_dir: str, run_id: str,
+                  repo_dir: str) -> NodeResult | None:
+    """Spawn a temporary claude node to diagnose & fix a failed gate, then retry."""
+    upstream = "\n".join(
+        f"Upstream '{d}' goal:\n{nodes[d].prompt[:500]}"
+        for d in gate.deps if d in nodes and nodes[d].prompt
+    )
+    resolved_cmd = interpolate(gate.cmd, ctx)
+    prompt = _AUTOFIX_PROMPT.format(
+        cmd              = resolved_cmd,
+        error_output     = gate_result.output[-3000:],
+        upstream_context = f"\n{upstream}" if upstream else "",
+    )
+
+    fix_name = f"_autofix_{gate.name}"
+    defaults = wf.get("defaults", {})
+    fix_node = Node(
+        name=fix_name, type=NodeType.CLAUDE, role=Role.PRODUCE,
+        prompt=prompt, max_runs=defaults.get("max_runs", 0),
+        timeout="10m", skills=defaults.get("skills", []),
+    )
+
+    _log(f"[{fix_name}] attempting auto-fix ...")
+    fix_result = run_claude(fix_node, prompt, run_dir, run_id, repo_dir)
+    _log(f"[{fix_name}] {'ok' if fix_result.status == Status.SUCCESS else 'FAIL'}"
+         f"  {fix_result.duration:.1f}s")
+
+    if fix_result.status != Status.SUCCESS:
+        return None
+
+    _log(f"[{gate.name}] retrying after autofix ...")
+    retry = run_shell(gate, resolved_cmd, cwd=repo_dir)
+    _log(f"[{gate.name}] retry {'ok' if retry.status == Status.SUCCESS else 'FAIL'}"
+         f"  {retry.duration:.1f}s")
+    return retry
 
 # ==== Adaptive Replanning ==================================================
 
@@ -606,6 +697,11 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
 
     results: dict[str, NodeResult] = {name: NodeResult() for name in nodes}
     blocked: set[str] = set()
+    autofixed: set[str] = set()           # 每个gate最多autofix一次
+    autofix   = wf.get("autofix", True)   # 顶层开关，默认启用
+    commit_cfg = wf.get("auto_commit", {})
+    do_commit  = bool(commit_cfg) if isinstance(commit_cfg, dict) else bool(commit_cfg)
+    do_push    = commit_cfg.get("push", False) if isinstance(commit_cfg, dict) else False
 
     if from_node:
         results, blocked = _load_resume_state(nodes, from_node, repo_dir)
@@ -675,9 +771,23 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     _log(f"[{name}] {icon}  {r.duration:.1f}s"
                          + (f"  retries={r.retries}" if r.retries else ""))
 
-                # phase 3: gate propagation
+                # phase 3: gate propagation (with autofix + auto-commit)
                 for name in to_run:
-                    if nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
+                    if nodes[name].role == Role.GATE and results[name].status == Status.SUCCESS:
+                        if do_commit:
+                            _auto_commit(name, nodes, repo_dir, push=do_push)
+                    elif nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
+                        # autofix: spawn claude to diagnose & fix, then retry gate
+                        if autofix and name not in autofixed:
+                            autofixed.add(name)
+                            fix_result = _autofix_gate(
+                                nodes[name], results[name], nodes, ctx,
+                                wf, run_dir, run_id, repo_dir)
+                            if fix_result and fix_result.status == Status.SUCCESS:
+                                results[name] = fix_result
+                                _log(f"[{name}] gate passed after autofix")
+                                continue
+
                         downstream = find_blocked(nodes, name)
                         blocked |= downstream
                         _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
