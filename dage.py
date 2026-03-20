@@ -1076,7 +1076,6 @@ class DageDisplay:
 
     def log(self, msg: str):
         self.live.console.print(msg, highlight=False)
-        self.live.update(self._render())
 
     def _fmt_dur(self, s: float) -> str:
         if s < 60:  return f"{s:.0f}s"
