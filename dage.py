@@ -1152,7 +1152,7 @@ class DageDisplay:
         except OSError:
             term_h = 40
         panel_h = len(lines) + 2  # content lines + top/bottom border
-        log_h   = max(term_h - panel_h, 5)
+        log_h   = max(term_h - panel_h - 1, 5)
         visible = self.log_buf[-log_h:]
         # pad to fill terminal
         if len(visible) < log_h:
