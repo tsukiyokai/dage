@@ -432,11 +432,11 @@ def _merge_worktrees(auto_wt: dict[str, str], repo_dir: str, run_id: str):
                 f'cd "{repo_dir}" && git merge --no-edit "{wt_name}"',
                 shell=True)
             _log(f"  merge: {node_name} -> main")
-            # cleanup
+            # reset worktree to main HEAD for reuse next run
             _run_streamed(
-                f"_cleanup_{node_name}",
-                f'cd "{repo_dir}" && git worktree remove "{wt_path}" --force 2>/dev/null; '
-                f'git branch -D "{wt_name}" 2>/dev/null; true',
+                f"_reset_{node_name}",
+                f'cd "{wt_path}" && git checkout -B "{wt_name}" HEAD 2>/dev/null; '
+                f'git reset --hard main 2>/dev/null; true',
                 shell=True)
         except Exception as e:
             _log(f"  merge failed ({node_name}): {e}")
@@ -868,7 +868,7 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                                 if nodes[n].type == NodeType.CLAUDE
                                 and not nodes[n].worktree
                                 and nodes[n].role != Role.CONTEXT]
-                auto_wt = ({n: f"dage-{run_id}-{n}" for n in claude_no_wt}
+                auto_wt = ({n: f"dage-{n}" for n in claude_no_wt}
                            if len(claude_no_wt) > 1 else {})
                 if auto_wt:
                     _log(f"  auto-worktree: {sorted(auto_wt)}")
