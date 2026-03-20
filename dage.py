@@ -1049,7 +1049,8 @@ def _find_latest_run(repo_dir: str) -> str | None:
 # ==== TUI Display ==========================================================
 
 try:
-    from rich.console import Console as RichConsole, Group
+    from rich.console import Console as RichConsole
+    from rich.layout import Layout
     from rich.live import Live
     from rich.panel import Panel
     from rich.text import Text
@@ -1147,21 +1148,13 @@ class DageDisplay:
                       subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
                       border_style="blue", padding=(0, 1))
 
-        try:
-            term_h = os.get_terminal_size().lines
-        except OSError:
-            term_h = 40
-        from io import StringIO
-        buf = RichConsole(file=StringIO(), width=self.console.width, force_terminal=True)
-        buf.print(panel)
-        panel_h = buf.file.getvalue().count("\n")
-        log_h   = max(term_h - panel_h - 1, 3)  # -1 for Live cursor line
-        visible = self.log_buf[-log_h:]
-        # pad to fill terminal
-        if len(visible) < log_h:
-            visible = visible + [""] * (log_h - len(visible))
-        log_text = Text.from_ansi("\n".join(visible))
-        return Group(log_text, panel)
+        log_text = Text.from_ansi("\n".join(self.log_buf[-200:]))
+        layout = Layout()
+        layout.split_column(
+            Layout(log_text, name="log"),
+            Layout(panel, name="status", minimum=len(lines) + 2),
+        )
+        return layout
 
 _display: DageDisplay | None = None
 
