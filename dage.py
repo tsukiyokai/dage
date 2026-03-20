@@ -1072,6 +1072,11 @@ _STATUS_ICON = {
     Status.SKIPPED: ("⊘", "dim"),
 }
 
+class _LiveProxy:
+    """Proxy that calls fn() on each Rich render, enabling live data refresh."""
+    def __init__(self, fn): self.fn = fn
+    def __rich__(self):     return self.fn()
+
 class DageDisplay:
     """Real-time DAG status panel + log tail, rendered as one Live block."""
 
@@ -1081,12 +1086,12 @@ class DageDisplay:
         self.results      = results
         self.start_time   = start_time
         self.node_start:  dict[str, float] = {}
-        self.node_last:   dict[str, str]   = {}  # latest log line per node
-        self.node_lines:  dict[str, int]   = {}  # log line count per node
+        self.node_last:   dict[str, str]   = {}
+        self.node_lines:  dict[str, int]   = {}
         self.replan_count = 0
         self.log_buf: list[str] = []
         self.console      = RichConsole(stderr=True)
-        self.live         = Live(self._render(), console=self.console,
+        self.live         = Live(_LiveProxy(self._render), console=self.console,
                                  refresh_per_second=2, screen=True)
 
     def start(self):
@@ -1099,7 +1104,7 @@ class DageDisplay:
         self.log_buf.append(msg)
         if len(self.log_buf) > 200:
             self.log_buf = self.log_buf[-200:]
-        self.live.update(self._render())
+        self.live.refresh()
 
     def _fmt_dur(self, s: float) -> str:
         if s < 60:  return f"{s:.0f}s"
