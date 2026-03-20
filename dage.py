@@ -1077,8 +1077,8 @@ class DageDisplay:
 
     def log(self, msg: str):
         self.log_buf.append(msg)
-        if len(self.log_buf) > self.max_log:
-            self.log_buf = self.log_buf[-self.max_log:]
+        if len(self.log_buf) > 200:
+            self.log_buf = self.log_buf[-200:]
         self.live.update(self._render())
 
     def _fmt_dur(self, s: float) -> str:
