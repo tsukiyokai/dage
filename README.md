@@ -1,78 +1,60 @@
 # dage
 
-*從前，編排 AI agent 意味著寫膠水腳本、逐步看護、祈禱第三步不要在你睡著前崩潰。*
+_Orchestrating AI agents used to mean glue scripts, babysitting, and praying step three wouldn't crash before you fell asleep._
 
-dage 是解藥：把工作流寫成一份 YAML DAG，按下 run，然後走開。節點按拓撲序執行，gate 失敗即短路，能並行的全部並行。你醒來時，只剩一份乾淨的日誌告訴你什麼成了、什麼沒成。
-
-```
-你                        dage                         AI agents
- │                          │                              │
- │  dage run workflow.yaml  │                              │
- │ ─────────────────────> │                              │
- │                          │  topo sort ─> layer 0        │
- │                          │  ┌─ scan ──────────────────> │ 讀代碼、寫筆記
- │                          │  └─ read_docs ─────────────> │ 讀文檔、寫摘要
- │                          │  gate_test (cargo test)       │
- │                          │  ┌─ impl_ir ───────────────> │ 寫 IR 類型
- │                          │  └─ impl_topo ─────────────> │ 寫拓撲模組
- │                          │  gate ─> auto-commit+push    │
- │                          │  ...                         │
- │  <── 完整報告 ──────────  │                              │
-```
-
-## 核心概念
+dage is the antidote. Describe your workflow as a YAML DAG, hit `run`, walk away. Nodes execute in topological order, gates short-circuit on failure, and everything that can run in parallel does. You come back to a clean log of what worked and what didn't.
 
 ```
-workflow.yaml
-│
-├─ nodes:
-│   ├─ scan        (claude/context)   ── 讀代碼庫結構
-│   ├─ implement   (claude/produce)   ── 寫代碼
-│   ├─ gate_test   (shell/gate)       ── cargo test
-│   └─ report      (claude/meta)      ── 撰寫報告
-│
-├─ deps: [scan] ──────────────────────── 資料依賴，構成 DAG
-├─ adaptive: true ────────────────────── 執行中可觸發 replan
-└─ skills: [vibe-opt] ───────────────── 注入領域知識
+ You                       dage                          AI agents
+  │                          │                               │
+  │  dage run workflow.yaml  │                               │
+  │ ────────────────────────>│                               │
+  │                          │  topo sort -> layer 0         │
+  │                          │  ├─ scan ────────────────────>│  read code, write notes
+  │                          │  └─ read_docs ──────────────>│  read docs, summarize
+  │                          │  gate_test (cargo test)        │
+  │                          │  ├─ impl_ir ────────────────>│  write IR types
+  │                          │  └─ impl_topo ──────────────>│  write topology module
+  │                          │  gate -> auto-commit + push   │
+  │                          │  ...                          │
+  │  <── full report ─────── │                               │
 ```
 
-兩種節點類型：`claude`（啟動 AI agent 經由 ccx）和 `shell`（跑命令）。同一層的節點自動並行，`gate` 失敗則跳過所有下游 —— 測試不過就不寫報告。
+---
 
-## 快速開始
+## Quick Start
 
 ```bash
-# 從自然語言生成工作流
-dage plan "分析代碼庫並重構認證模組"
-
-# 執行
-dage run workflow.yaml
-
-# 中途失敗？從某個節點恢復
-dage run workflow.yaml --from report
+dage plan "analyze codebase and refactor auth module"   # generate workflow
+dage run workflow.yaml                                   # execute
+dage run workflow.yaml --from report                     # resume from a node
 ```
 
-## 工作流 YAML
+## How It Works
+
+Two node types: `claude` (spawns an AI agent via [ccx]) and `shell` (runs a command).
+Nodes in the same layer run concurrently. A `gate` that fails skips all downstream nodes.
 
 ```yaml
-description: "實現 Plan Compiler"
+description: "Build a plan compiler"
 
 defaults:
-  skills: [vibe-opt]          # 所有 claude 節點注入此 skill
+  skills: [vibe-opt]                 # inject domain knowledge into all claude nodes
 
 auto_commit:
-  push: true                  # gate 通過即 commit + push
+  push: true                         # commit + push after each gate passes
 
 nodes:
   scan:
     role: context
-    max_runs: 1               # 讀文檔，單輪足夠
+    max_runs: 1                      # bounded task: read docs, one iteration
     prompt: |
-      精讀設計文檔，提煉架構和關鍵類型。
+      Read the design doc. Summarize architecture and key types.
 
   implement:
-    deps: [scan]
-    prompt: |                 # max_runs 預設 0（無限，completion signal 終止）
-      實現功能。上游摘要：${nodes.scan.output}
+    deps: [scan]                     # max_runs defaults to 0 (unlimited, completion-signal driven)
+    prompt: |
+      Implement the feature. Upstream summary: ${nodes.scan.output}
 
   gate_test:
     role: gate
@@ -85,150 +67,144 @@ nodes:
     max_runs: 1
     deps: [gate_test]
     prompt: |
-      撰寫總結。測試結果：${nodes.gate_test.status}
+      Write a summary. Test result: ${nodes.gate_test.status}
 ```
 
-## 執行引擎
+## Engine
 
 ```
-while True:
+while true:
     layer = next_runnable(nodes, results, blocked)
-    if not layer: break
-    ┌──────────────────────────────────────────────┐
-    │ Phase 1   condition filter                   │
-    │ Phase 2   parallel execution (ThreadPool)    │
-    │ Phase 2.5 worktree merge (git merge)         │
-    │ Phase 3   gate propagation + autofix + commit │
-    │ Phase 4   adaptive replan                    │
-    └──────────────────────────────────────────────┘
-    hot-reload: YAML 變更自動生效
+    if empty: break
+    ┌─────────────────────────────────────────────────┐
+    │  Phase 1    condition filter                    │
+    │  Phase 2    parallel execution (ThreadPool)     │
+    │  Phase 2.5  worktree merge (git merge)          │
+    │  Phase 3    gate propagation + autofix + commit │
+    │  Phase 4    adaptive replan                     │
+    └─────────────────────────────────────────────────┘
+    hot-reload: YAML changes take effect next iteration
 ```
 
-不是靜態的 `for layer in layers` —— 是動態的 `while + next_runnable()`。replan 新增的節點在下一輪自動被拾起。
+Dynamic `while + next_runnable()`, not static `for layer in layers`. Replanned nodes are picked up automatically.
 
-## 特性一覽
+## Features
 
-| 特性 | 說明 |
-|------|------|
-| 動態排程 | `next_runnable()` 每輪重算可執行節點 |
-| 並行 worktree | 同層 claude 節點自動分配 git worktree，git merge 回主庫 |
-| Gate 短路 | gate 失敗 → 所有下游標記 skipped |
-| Gate Autofix | gate 失敗時自動啟動 claude 診斷修復，修好後重試 |
-| Auto-commit | gate 通過即 `git add -A && commit`，可選 push |
-| Adaptive Replan | `adaptive: true` 節點輸出 `[REPLAN: reason]` 觸發 AI 重規劃 |
-| Replan 治理 | `mode: auto/confirm/log` 控制自治邊界，強制 justification |
-| Skill 注入 | `skills: [name]` 經由 `--append-system-prompt` 注入到 `-p` 模式 |
-| YAML 熱載入 | 運行中修改 YAML，下一輪自動生效 |
-| TUI 面板 | rich 全螢幕：DAG 狀態面板 + 彩色日誌流 |
-| `--from` 恢復 | 從指定節點恢復，跳過已完成節點 |
-| 變數插值 | `${nodes.NAME.output}` / `${vars.X}` / `${run.summary}` |
+| Feature | Description |
+|---------|-------------|
+| Dynamic scheduling | `next_runnable()` recomputes runnable nodes each iteration |
+| Parallel worktrees | Concurrent claude nodes get isolated git worktrees, merged back via `git merge` |
+| Gate short-circuit | Gate failure skips all downstream nodes |
+| Gate autofix | Failed gate triggers a claude agent to diagnose and fix, then retries |
+| Auto-commit | Gate pass triggers `git add -A && commit`, optionally push |
+| Adaptive replan | `adaptive: true` nodes emit `[REPLAN: reason]` to trigger AI replanning |
+| Replan governance | `mode: auto/confirm/log` controls autonomy; mandatory `justification` field |
+| Skill injection | `skills: [name]` injects skill content via `--append-system-prompt` in `-p` mode |
+| YAML hot-reload | Edit the YAML mid-run; changes apply on the next iteration |
+| TUI dashboard | Full-screen rich panel: DAG status + colored log stream, auto-scrolling |
+| `--from` resume | Resume from a specific node, skipping completed upstream |
+| Interpolation | `${nodes.NAME.output}` / `${vars.X}` / `${run.summary}` |
 
 ## Adaptive Replan
 
 ```
 step1 (adaptive: true)
-  輸出: "分析完成 [REPLAN: 需要額外驗證步驟]"
-     │
-     ▼
-  引擎偵測 [REPLAN: ...] ─> 呼叫 AI replanner
-     │
-     ▼
-  replanner 返回:
-    justification: "插入驗證節點確保信號檢測正確"
+  output: "analysis complete [REPLAN: need validation step]"
+      |
+      v
+  engine detects [REPLAN: ...] --> calls AI replanner
+      |
+      v
+  replanner returns:
+    justification: "insert validation gate before final step"
     remove: [step2]
     add:
-      validate: {type: shell, deps: [step1], cmd: "make check"}
-      step2:    {type: shell, deps: [validate], cmd: "make final"}
-     │
-     ▼
-  mode: auto    → 直接套用
-  mode: confirm → 暫停等人批准
-  mode: log     → 只記錄不動作
+      validate: { type: shell, deps: [step1], cmd: "make check" }
+      step2:    { type: shell, deps: [validate], cmd: "make final" }
+      |
+      v
+  mode: auto    --> apply immediately
+  mode: confirm --> pause for human approval
+  mode: log     --> record signal, no action
 ```
 
 ## TUI
 
 ```
-  scaffold │ 💾 Cargo.toml
-  scaffold │ 💻 cargo build
-  scaffold │ 💬 骨架搭建完成
-    impl_ir │ 📖 plan.rs
-    impl_ir │ 💬 PlanHeader needs repr(C)...
-  impl_topo │ 💾 topo.rs
-╭─────────────────── Planck v0.1 Phase A ───────────────────╮
-│  L0  ✓ read_design 54s   ✓ read_plan 43s   ✓ scan 0s     │
-│  L1  ✓ scaffold 3:12                                     │
-│  L2  ✓ gate_build 2s                                     │
-│  L3  ◐ impl_ir 5:12   ◐ impl_topo 3:08                   │
-│  L4  ○ gate_ir_topo                                      │
-│  L5  ○ impl_cost                                         │
-│      ⋮  (8 more)                                         │
-│                                                          │
-│  ◐ 2 running   ✓ 5 success   ○ 12 pending               │
-╰──────────────────────── 5/19 ── 10:14 ───────────────────╯
+       scaffold │ Cargo.toml created
+       scaffold │ cargo build: 0 warnings
+        impl_ir │ reading plan.rs...
+        impl_ir │ PlanHeader repr(C) + serialize
+      impl_topo │ writing topo.rs
+╭──────────────────── Planck v0.1 Phase A ────────────────────╮
+│  L0  ✓ read_design 54s  read_plan 43s  scan 0s              │
+│  L1  ✓ scaffold 3:12                   ◐ impl_ir 5:12       │
+│  L2  ✓ gate_build 2s                     Plan IR types...   │
+│  L3  ◐ impl_ir 5:12  ◐ impl_topo 3:08                       │
+│  L4  ○ gate_ir_topo                    ◐ impl_topo 3:08     │
+│      ⋮  (9 more)                         hccs_8card()...    │
+│                                                              │
+│  ◐ 2 running   ✓ 5 success   ○ 12 pending                   │
+╰─────────────────────────── 5/19 ── 10:14 ───────────────────╯
 ```
 
-日誌在上滾動，面板固定在底部。節點名彩色編碼，右對齊 15 字元。全螢幕模式，0.5 秒刷新。
+Logs scroll above, status panel stays at the bottom. Node names are color-coded and right-aligned. Full-screen mode, 0.5s refresh. Panel auto-scrolls to track the active layer.
 
-## 檔案管理
-
-```
-.dage/runs/{run_id}/
-  original-nodes.json    # 運行起始節點快照
-  results.json           # 最終結果
-  replan-1.json          # replan 事件 {seq, added, removed, justification}
-  replan-1-raw.yaml      # replanner 原始輸出
-  {node}/ccx.log         # 每個節點的 ccx 日誌
-  {node}.notes.md        # 節點產出（下游經由 ${nodes.NAME.output} 引用）
-```
-
-## 遠景
-
-讓 AI agent 的多步驟協作變成聲明式：寫一份 YAML 描述目標和依賴，dage 處理執行、並行、失敗恢復、運行時自適應。從「人盯著 agent 跑」到「人定義目標後走開」。
+## File Layout
 
 ```
-v0.1  靜態 DAG 執行               ── done
-v0.2  層內並行                     ── done
-v0.3  AI 生成 workflow (dage plan) ── done
-v0.4  自適應 replan + 治理         ── done
-v0.5  skill / commit / TUI / etc.  ── done
-v0.6  goal-directed loop           ── next (plan→run→evaluate→replan 外層循環)
-v0.7  多項目編排                    ── future (跨 repo 的 DAG)
+.dage/
+  runs/{run_id}/
+    original-nodes.json       initial node snapshot
+    results.json              final results
+    replan-{n}.json           replan event: {seq, added, removed, justification}
+    replan-{n}-raw.yaml       raw replanner output
+    {node}/ccx.log            per-node ccx log
+    {node}.notes.md           node output (referenced via ${nodes.NAME.output})
+  worktrees/
+    dage-{node}/              stable worktrees, reused across runs
+  latest                      most recent run_id
 ```
 
-## 專案數據
+## Roadmap
 
 ```
-核心代碼     1518 行 (單檔案 dage.py)
-函數/類       50 個
-commits       52 個
-依賴         PyYAML + rich (TUI, 可選)
-外部工具     ccx (Claude Code iterative runner)
+v0.1  Static DAG execution                         done
+v0.2  Intra-layer parallelism                       done
+v0.3  AI plan generation (dage plan)                done
+v0.4  Adaptive replan + two-layer governance        done
+v0.5  Skills, auto-commit, worktree, TUI, autofix   done
+v0.6  Goal-directed loop                            next
+v0.7  Multi-repo orchestration                      future
 ```
 
 ## TODO
 
-| 優先 | 項目 | 說明 |
-|------|------|------|
-| P0 | worktree merge 衝突處理 | git merge 衝突時需要 fallback 策略 |
-| P0 | 中斷恢復健壯性 | Ctrl+C 後 results.json / worktree 殘留 |
-| P1 | goal-directed loop | `dage goal "描述" --verify "cmd"` 外層循環 |
-| P1 | replan scope 約束 | 限制 replanner 只能加特定類型節點 |
-| P1 | cost tracking | 累計每個節點的 ccx 花費 ($) |
-| P2 | 多 repo 編排 | 跨倉庫的 DAG (前端 + 後端 + 部署) |
-| P2 | Web UI | 替代終端 TUI，瀏覽器即時查看 |
-| P2 | 通知 | Slack / 郵件通知 gate 失敗或 workflow 完成 |
-| P3 | DAG 視覺化匯出 | Mermaid / Graphviz 圖 |
-| P3 | 歷史分析 | 跨 run 的效能趨勢 |
+| Pri | Item | Notes |
+|-----|------|-------|
+| P0 | Worktree merge conflicts | Need fallback strategy when `git merge` conflicts |
+| P0 | Interrupt recovery | Ctrl+C may leave results.json unwritten, worktrees orphaned |
+| P1 | Goal-directed loop | `dage goal "desc" --verify "cmd"` outer loop |
+| P1 | Replan scope constraints | Limit what types of nodes the replanner can add |
+| P1 | Cost tracking | Accumulate per-node ccx spend ($) |
+| P2 | Multi-repo orchestration | Cross-repository DAGs |
+| P2 | Web UI | Browser-based alternative to terminal TUI |
+| P2 | Notifications | Slack/email on gate failure or workflow completion |
+| P3 | DAG export | Mermaid / Graphviz visualization |
+| P3 | History analytics | Cross-run performance trends |
 
-## 環境需求
+## Requirements
 
-Python 3.9+、PyYAML、[rich](https://github.com/Textualize/rich)、[ccx](https://github.com/tsukiyokai/dotfiles/blob/main/bin/ccx)。一台機器，一份 YAML，一條命令。
+Python 3.9+, PyYAML, [rich] (optional, for TUI), [ccx] for claude nodes.
+One machine, one YAML, one command.
+
+[rich]: https://github.com/Textualize/rich
+[ccx]: https://github.com/tsukiyokai/dotfiles/blob/main/bin/ccx
 
 ## Changelog
 
-- 0.1 — DAG engine, shell/claude executors, gate, interpolation, `--from` resume
-- 0.2 — intra-layer parallel execution (ThreadPoolExecutor)
-- 0.3 — `dage plan`: natural language → workflow YAML
-- 0.4 — adaptive replan + 兩層治理 (mode + justification)
-- 0.5 — skill 注入、auto-commit、worktree merge/reuse、gate autofix、TUI、hot-reload
+- 0.1 — DAG engine, shell/claude executors, gate short-circuit, interpolation, `--from` resume
+- 0.2 — Intra-layer parallel execution via ThreadPoolExecutor
+- 0.3 — `dage plan`: natural language to workflow YAML (two-phase brainstorm)
+- 0.4 — Adaptive replanning with two-layer governance (approval modes + justification)
+- 0.5 — Skill injection, auto-commit, worktree merge/reuse, gate autofix, TUI, hot-reload
