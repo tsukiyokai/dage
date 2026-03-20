@@ -396,20 +396,26 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 # ==== Worktree Merge =======================================================
 
 def _merge_worktrees(auto_wt: dict[str, str], repo_dir: str, run_id: str):
-    """Merge worktree changes back to main repo via rsync-style copy."""
-    wt_base = os.path.join(repo_dir, "..", "continuous-claude-worktrees")
+    """Merge worktree branches back to main via git merge (handles same-file edits)."""
     for node_name, wt_name in auto_wt.items():
+        wt_base = os.path.join(repo_dir, "..", "continuous-claude-worktrees")
         wt_path = os.path.realpath(os.path.join(wt_base, wt_name))
         if not os.path.isdir(wt_path):
             continue
-        # rsync everything except .git from worktree to main repo
         try:
+            # commit worktree changes on its branch
+            _run_streamed(
+                f"_commit_{node_name}",
+                f'cd "{wt_path}" && git add -A && '
+                f'git diff --cached --quiet || git commit -m "dage: {node_name}"',
+                shell=True)
+            # merge branch into main
             _run_streamed(
                 f"_merge_{node_name}",
-                f'rsync -a --exclude=.git "{wt_path}/" "{repo_dir}/"',
+                f'cd "{repo_dir}" && git merge --no-edit "{wt_name}"',
                 shell=True)
             _log(f"  merge: {node_name} -> main")
-            # cleanup worktree
+            # cleanup
             _run_streamed(
                 f"_cleanup_{node_name}",
                 f'cd "{repo_dir}" && git worktree remove "{wt_path}" --force 2>/dev/null; '
