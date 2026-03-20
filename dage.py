@@ -802,6 +802,12 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
         _log("[dry-run mode]")
     _log("")
 
+    global _display
+    start_time = time.monotonic()
+    if _HAS_RICH and sys.stderr.isatty() and not dry_run:
+        _display = DageDisplay(wf, nodes, results, start_time)
+        _display.start()
+
     try:
         with ThreadPoolExecutor() as pool:
             while True:
@@ -851,6 +857,10 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     _log(f"  auto-worktree: {sorted(auto_wt)}")
 
                 # phase 2: parallel execution
+                for n in to_run:
+                    results[n] = NodeResult(status=Status.RUNNING)
+                    if _display:
+                        _display.node_start[n] = time.monotonic()
                 futures = {
                     pool.submit(execute_node, nodes[n], ctx, run_dir,
                                 run_id, repo_dir, dry_run,
@@ -935,11 +945,17 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                             nodes, results, blocked, replan_result,
                             wf.get("defaults", {}), run_dir, seq)
                         replan_count += 1
+                        if _display:
+                            _display.replan_count = replan_count
                         _log(f"[replan] +{len(event['added'])} "
                              f"-{len(event['removed'])} nodes")
 
     except KeyboardInterrupt:
         _log("\n[interrupted] saving progress...")
+    finally:
+        if _display:
+            _display.stop()
+            _display = None
 
     save_state(run_dir, results)
     _log("")
@@ -1018,8 +1034,111 @@ def _find_latest_run(repo_dir: str) -> str | None:
 
 # ==== Output ===============================================================
 
+# ==== TUI Display ==========================================================
+
+try:
+    from rich.console import Console as RichConsole
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.text import Text
+    _HAS_RICH = True
+except ImportError:
+    _HAS_RICH = False
+
+_STATUS_ICON = {
+    Status.SUCCESS: ("✓", "green"),
+    Status.RUNNING: ("◐", "yellow"),
+    Status.PENDING: ("○", "dim"),
+    Status.FAILED:  ("✗", "red"),
+    Status.SKIPPED: ("⊘", "dim"),
+}
+
+class DageDisplay:
+    """Real-time DAG status panel + streaming logs."""
+
+    def __init__(self, wf, nodes, results, start_time):
+        self.wf          = wf
+        self.nodes        = nodes
+        self.results      = results
+        self.start_time   = start_time
+        self.node_start:  dict[str, float] = {}
+        self.replan_count = 0
+        self.console      = RichConsole(stderr=True)
+        self.live         = Live(self._render(), console=self.console,
+                                 refresh_per_second=2, vertical_overflow="visible")
+
+    def start(self):
+        self.live.start()
+
+    def stop(self):
+        self.live.stop()
+
+    def log(self, msg: str):
+        self.live.console.print(msg, highlight=False)
+        self.live.update(self._render())
+
+    def _fmt_dur(self, s: float) -> str:
+        if s < 60:  return f"{s:.0f}s"
+        if s < 3600: return f"{int(s)//60}:{int(s)%60:02d}"
+        return f"{int(s)//3600}h{int(s)%3600//60:02d}"
+
+    def _render(self) -> Panel:
+        elapsed = time.monotonic() - self.start_time
+        total   = len(self.nodes)
+        done    = sum(1 for r in self.results.values()
+                      if r.status not in (Status.PENDING, Status.RUNNING))
+
+        lines = []
+        layers = topo_layers(self.nodes)
+        shown, max_show = 0, 14
+        for i, layer in enumerate(layers):
+            if shown >= max_show:
+                lines.append(f"  [dim]     ⋮  ({total - shown} more)[/]")
+                break
+            parts = []
+            for name in layer:
+                r = self.results.get(name, NodeResult())
+                icon, style = _STATUS_ICON.get(r.status, ("?", "dim"))
+                if r.status == Status.RUNNING:
+                    t0 = self.node_start.get(name, time.monotonic())
+                    dur = self._fmt_dur(time.monotonic() - t0)
+                    parts.append(f"[{style}]{icon} {name} {dur}[/]")
+                elif r.status == Status.SUCCESS:
+                    parts.append(f"[green]{icon} {name}[/] [dim]{self._fmt_dur(r.duration)}[/]")
+                elif r.status == Status.FAILED:
+                    parts.append(f"[{style}]{icon} {name}[/]")
+                else:
+                    parts.append(f"[{style}]{icon} {name}[/]")
+                shown += 1
+            lines.append(f"  [dim]L{i:<2}[/]  {'   '.join(parts)}")
+
+        counts = {}
+        for r in self.results.values():
+            counts[r.status] = counts.get(r.status, 0) + 1
+        status_parts = []
+        for s in (Status.RUNNING, Status.SUCCESS, Status.FAILED, Status.SKIPPED, Status.PENDING):
+            if counts.get(s, 0):
+                icon, style = _STATUS_ICON[s]
+                status_parts.append(f"[{style}]{icon} {counts[s]} {s.value}[/]")
+
+        lines.append("")
+        rp = f"  [dim]replans {self.replan_count}[/]" if self.replan_count else ""
+        lines.append(f"  {'   '.join(status_parts)}{rp}")
+
+        desc = self.wf.get("description", "dage")
+        body = Text.from_markup("\n".join(lines))
+        return Panel(body,
+                     title=f"[bold] {desc} [/]",
+                     subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
+                     border_style="blue", padding=(0, 1))
+
+_display: DageDisplay | None = None
+
 def _log(msg: str):
-    print(msg, file=sys.stderr)
+    if _display:
+        _display.log(msg)
+    else:
+        print(msg, file=sys.stderr)
 
 def print_summary(results: dict[str, NodeResult]):
     _log("=" * 60)
