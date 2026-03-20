@@ -182,6 +182,45 @@ step1 (adaptive: true)
   {node}.notes.md        # 節點產出（下游經由 ${nodes.NAME.output} 引用）
 ```
 
+## 遠景
+
+讓 AI agent 的多步驟協作變成聲明式：寫一份 YAML 描述目標和依賴，dage 處理執行、並行、失敗恢復、運行時自適應。從「人盯著 agent 跑」到「人定義目標後走開」。
+
+```
+v0.1  靜態 DAG 執行               ── done
+v0.2  層內並行                     ── done
+v0.3  AI 生成 workflow (dage plan) ── done
+v0.4  自適應 replan + 治理         ── done
+v0.5  skill / commit / TUI / etc.  ── done
+v0.6  goal-directed loop           ── next (plan→run→evaluate→replan 外層循環)
+v0.7  多項目編排                    ── future (跨 repo 的 DAG)
+```
+
+## 專案數據
+
+```
+核心代碼     1518 行 (單檔案 dage.py)
+函數/類       50 個
+commits       52 個
+依賴         PyYAML + rich (TUI, 可選)
+外部工具     ccx (Claude Code iterative runner)
+```
+
+## TODO
+
+| 優先 | 項目 | 說明 |
+|------|------|------|
+| P0 | worktree merge 衝突處理 | git merge 衝突時需要 fallback 策略 |
+| P0 | 中斷恢復健壯性 | Ctrl+C 後 results.json / worktree 殘留 |
+| P1 | goal-directed loop | `dage goal "描述" --verify "cmd"` 外層循環 |
+| P1 | replan scope 約束 | 限制 replanner 只能加特定類型節點 |
+| P1 | cost tracking | 累計每個節點的 ccx 花費 ($) |
+| P2 | 多 repo 編排 | 跨倉庫的 DAG (前端 + 後端 + 部署) |
+| P2 | Web UI | 替代終端 TUI，瀏覽器即時查看 |
+| P2 | 通知 | Slack / 郵件通知 gate 失敗或 workflow 完成 |
+| P3 | DAG 視覺化匯出 | Mermaid / Graphviz 圖 |
+| P3 | 歷史分析 | 跨 run 的效能趨勢 |
+
 ## 環境需求
 
 Python 3.9+、PyYAML、[rich](https://github.com/Textualize/rich)、[ccx](https://github.com/tsukiyokai/dotfiles/blob/main/bin/ccx)。一台機器，一份 YAML，一條命令。
@@ -192,4 +231,4 @@ Python 3.9+、PyYAML、[rich](https://github.com/Textualize/rich)、[ccx](https:
 - 0.2 — intra-layer parallel execution (ThreadPoolExecutor)
 - 0.3 — `dage plan`: natural language → workflow YAML
 - 0.4 — adaptive replan + 兩層治理 (mode + justification)
-- 0.5 — skill 注入 (`--append-system-prompt`)、auto-commit、worktree merge、TUI、hot-reload、autofix
+- 0.5 — skill 注入、auto-commit、worktree merge/reuse、gate autofix、TUI、hot-reload
