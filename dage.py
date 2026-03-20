@@ -1119,11 +1119,29 @@ class DageDisplay:
 
         lines = []
         layers = topo_layers(self.nodes)
-        shown, max_show = 0, 8
+        max_show = 8
+
+        # find first active layer (has RUNNING or PENDING nodes)
+        first_active = 0
         for i, layer in enumerate(layers):
-            if shown >= max_show:
-                lines.append(f"  [dim]     ⋮  ({total - shown} more)[/]")
+            if any(self.results.get(n, NodeResult()).status in (Status.RUNNING, Status.PENDING)
+                   for n in layer):
+                first_active = i
                 break
+
+        # scroll window: show 1 completed layer for context, then active+pending
+        start = max(0, first_active - 1)
+        if start > 0:
+            done_nodes = sum(len(layers[j]) for j in range(start))
+            lines.append(f"  [dim]✓ L0-L{start-1}  ({done_nodes} nodes done)[/]")
+
+        shown = 0
+        for i in range(start, len(layers)):
+            if shown >= max_show:
+                remaining = sum(len(layers[j]) for j in range(i, len(layers)))
+                lines.append(f"  [dim]     ⋮  ({remaining} more)[/]")
+                break
+            layer = layers[i]
             parts = []
             for name in layer:
                 r = self.results.get(name, NodeResult())
