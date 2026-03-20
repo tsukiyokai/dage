@@ -717,6 +717,51 @@ def _confirm_replan() -> bool:
     except (EOFError, KeyboardInterrupt):
         return False
 
+# ==== Hot Reload ============================================================
+
+def _hot_reload(yaml_path: str, nodes: dict[str, Node],
+                results: dict[str, NodeResult], blocked: set[str],
+                wf: dict) -> bool:
+    """Reload YAML and apply changes to pending nodes. Returns True if changed."""
+    try:
+        new_wf = load_workflow(yaml_path)
+        new_specs = new_wf.get("nodes", {})
+        defaults  = new_wf.get("defaults", {})
+
+        added, updated, removed = [], [], []
+
+        for name, spec in new_specs.items():
+            if name in nodes:
+                if results[name].status != Status.PENDING:
+                    continue
+                nodes[name] = _build_one_node(name, spec, defaults)
+                updated.append(name)
+            else:
+                nodes[name] = _build_one_node(name, spec, defaults)
+                results[name] = NodeResult()
+                added.append(name)
+
+        for name in list(nodes.keys()):
+            if name not in new_specs and results[name].status == Status.PENDING:
+                del nodes[name]
+                del results[name]
+                blocked.discard(name)
+                removed.append(name)
+
+        errors = validate_workflow(nodes)
+        if errors:
+            _log(f"[hot-reload] rejected: {errors}")
+            return False
+
+        wf.update(new_wf)
+
+        if added or updated or removed:
+            _log(f"[hot-reload] +{len(added)} ~{len(updated)} -{len(removed)}")
+        return bool(added or updated or removed)
+    except Exception as e:
+        _log(f"[hot-reload] failed: {e}")
+        return False
+
 # ==== DAG Runner ===========================================================
 
 def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
@@ -749,6 +794,9 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     _save_json(os.path.join(run_dir, "original-nodes.json"),
                {n: _node_to_dict(nodes[n]) for n in nodes})
 
+    yaml_path = wf.get("_yaml_path")
+    yaml_mtime = os.path.getmtime(yaml_path) if yaml_path else 0
+
     _log(f"run {run_id}  nodes={len(nodes)}")
     if dry_run:
         _log("[dry-run mode]")
@@ -757,6 +805,21 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     try:
         with ThreadPoolExecutor() as pool:
             while True:
+                # hot-reload: detect YAML changes between layers
+                if yaml_path:
+                    new_mtime = os.path.getmtime(yaml_path)
+                    if new_mtime != yaml_mtime:
+                        yaml_mtime = new_mtime
+                        if _hot_reload(yaml_path, nodes, results, blocked, wf):
+                            replan_cfg  = wf.get("replan", {})
+                            replan_mode = replan_cfg.get("mode", "auto")
+                            max_replans = replan_cfg.get("max_replans", 3)
+                            max_nodes   = replan_cfg.get("max_nodes", 50)
+                            commit_cfg  = wf.get("auto_commit", {})
+                            do_commit   = bool(commit_cfg) if isinstance(commit_cfg, dict) else bool(commit_cfg)
+                            do_push     = commit_cfg.get("push", False) if isinstance(commit_cfg, dict) else False
+                            autofix     = wf.get("autofix", True)
+
                 layer = next_runnable(nodes, results, blocked)
                 if not layer:
                     break
@@ -1167,6 +1230,7 @@ def main():
 
     if args.command == "run":
         wf    = load_workflow(args.workflow)
+        wf["_yaml_path"] = os.path.abspath(args.workflow)
         nodes = build_nodes(wf)
         errors = validate_workflow(nodes)
         if errors:
