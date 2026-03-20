@@ -325,7 +325,7 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
     ]
     wt = worktree or node.worktree
     if wt:
-        cmd += ["--worktree", wt]
+        cmd += ["--worktree", wt, "--worktree-base-dir", ".dage/worktrees"]
     if node.timeout:
         cmd += ["--max-duration", node.timeout]
     if node.skills:
@@ -415,7 +415,7 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 def _merge_worktrees(auto_wt: dict[str, str], repo_dir: str, run_id: str):
     """Merge worktree branches back to main via git merge (handles same-file edits)."""
     for node_name, wt_name in auto_wt.items():
-        wt_base = os.path.join(repo_dir, "..", "continuous-claude-worktrees")
+        wt_base = os.path.join(repo_dir, ".dage", "worktrees")
         wt_path = os.path.realpath(os.path.join(wt_base, wt_name))
         if not os.path.isdir(wt_path):
             continue
