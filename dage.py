@@ -217,9 +217,10 @@ _ANSI_RESET  = "\033[0m"
 def _log_line(name: str, line: str):
     """Format node output: color-coded right-aligned name │ content."""
     if _display and not name.startswith("_"):
-        stripped = re.sub(r'\[[\d;]*m', '', line).strip()  # strip ANSI for summary
+        stripped = re.sub(r'\[[\d;]*m', '', line).strip()
         if stripped:
             _display.node_last[name] = stripped
+        _display.node_lines[name] = _display.node_lines.get(name, 0) + 1
     if name.startswith("_"):
         _log(f"\033[2m  {name:>18} │ {line}{_ANSI_RESET}")
     else:
@@ -1057,6 +1058,7 @@ try:
     from rich.layout import Layout
     from rich.live import Live
     from rich.panel import Panel
+    from rich.table import Table as RichTable
     from rich.text import Text
     _HAS_RICH = True
 except ImportError:
@@ -1080,6 +1082,7 @@ class DageDisplay:
         self.start_time   = start_time
         self.node_start:  dict[str, float] = {}
         self.node_last:   dict[str, str]   = {}  # latest log line per node
+        self.node_lines:  dict[str, int]   = {}  # log line count per node
         self.replan_count = 0
         self.log_buf: list[str] = []
         self.console      = RichConsole(stderr=True)
@@ -1117,19 +1120,13 @@ class DageDisplay:
                 lines.append(f"  [dim]     ⋮  ({total - shown} more)[/]")
                 break
             parts = []
-            running_details = []
             for name in layer:
                 r = self.results.get(name, NodeResult())
                 icon, style = _STATUS_ICON.get(r.status, ("?", "dim"))
                 if r.status == Status.RUNNING:
                     t0 = self.node_start.get(name, time.monotonic())
                     dur = self._fmt_dur(time.monotonic() - t0)
-                    hint = self.node_last.get(name, "")
-                    if len(hint) > 60:
-                        hint = hint[:57] + "..."
                     parts.append(f"[{style}]{icon} {name} {dur}[/]")
-                    if hint:
-                        running_details.append(f"       [dim]{hint}[/]")
                 elif r.status == Status.SUCCESS:
                     parts.append(f"[green]{icon} {name}[/] [dim]{self._fmt_dur(r.duration)}[/]")
                 elif r.status == Status.FAILED:
@@ -1138,7 +1135,6 @@ class DageDisplay:
                     parts.append(f"[{style}]{icon} {name}[/]")
                 shown += 1
             lines.append(f"  [dim]L{i:<2}[/]  {'   '.join(parts)}")
-            lines.extend(running_details)
 
         counts = {}
         for r in self.results.values():
@@ -1153,8 +1149,41 @@ class DageDisplay:
         rp = f"  [dim]replans {self.replan_count}[/]" if self.replan_count else ""
         lines.append(f"  {'   '.join(status_parts)}{rp}")
 
+        # right column: running node details
+        right_lines = []
+        for name in sorted(self.nodes):
+            r = self.results.get(name, NodeResult())
+            if r.status != Status.RUNNING:
+                continue
+            t0 = self.node_start.get(name, time.monotonic())
+            dur = self._fmt_dur(time.monotonic() - t0)
+            prompt = self.nodes[name].prompt.strip().split("\n")[0] if self.nodes[name].prompt else ""
+            n_lines = self.node_lines.get(name, 0)
+            last = self.node_last.get(name, "")
+
+            right_lines.append(f"[yellow]◐ {name}[/] [dim]{dur}  {n_lines} lines[/]")
+            if prompt:
+                right_lines.append(f"  [dim]{prompt}[/]")
+            if last:
+                right_lines.append(f"  {last}")
+            right_lines.append("")
+
         desc = self.wf.get("description", "dage")
-        body = Text.from_markup("\n".join(lines))
+        left_text  = Text.from_markup("\n".join(lines))
+
+        if right_lines:
+            right_text = Text.from_markup("\n".join(right_lines))
+            table = RichTable(show_header=False, show_edge=False, box=None,
+                              pad_edge=False, expand=True, padding=(0, 1))
+            table.add_column(ratio=3, no_wrap=True, overflow="ellipsis")
+            table.add_column(ratio=2, no_wrap=True, overflow="ellipsis")
+            table.add_row(left_text, right_text)
+            body = table
+        else:
+            body = left_text
+
+        # panel height = max(left lines, right lines) + border
+        content_h = max(len(lines), len(right_lines)) + 2
         panel = Panel(body,
                       title=f"[bold] {desc} [/]",
                       subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
@@ -1164,7 +1193,7 @@ class DageDisplay:
         layout = Layout()
         layout.split_column(
             Layout(log_text, name="log"),
-            Layout(panel, name="status", size=len(lines) + 2),
+            Layout(panel, name="status", size=content_h),
         )
         return layout
 
