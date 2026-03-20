@@ -1038,7 +1038,7 @@ def _find_latest_run(repo_dir: str) -> str | None:
 # ==== TUI Display ==========================================================
 
 try:
-    from rich.console import Console as RichConsole
+    from rich.console import Console as RichConsole, Group
     from rich.live import Live
     from rich.panel import Panel
     from rich.text import Text
@@ -1055,7 +1055,7 @@ _STATUS_ICON = {
 }
 
 class DageDisplay:
-    """Real-time DAG status panel + streaming logs."""
+    """Real-time DAG status panel + log tail, rendered as one Live block."""
 
     def __init__(self, wf, nodes, results, start_time):
         self.wf          = wf
@@ -1064,9 +1064,10 @@ class DageDisplay:
         self.start_time   = start_time
         self.node_start:  dict[str, float] = {}
         self.replan_count = 0
+        self.log_buf: list[str] = []
         self.console      = RichConsole(stderr=True)
         self.live         = Live(self._render(), console=self.console,
-                                 refresh_per_second=2, vertical_overflow="visible")
+                                 refresh_per_second=2, screen=True)
 
     def start(self):
         self.live.start()
@@ -1075,7 +1076,10 @@ class DageDisplay:
         self.live.stop()
 
     def log(self, msg: str):
-        self.live.console.print(msg, highlight=False)
+        self.log_buf.append(msg)
+        if len(self.log_buf) > self.max_log:
+            self.log_buf = self.log_buf[-self.max_log:]
+        self.live.update(self._render())
 
     def _fmt_dur(self, s: float) -> str:
         if s < 60:  return f"{s:.0f}s"
@@ -1127,10 +1131,22 @@ class DageDisplay:
 
         desc = self.wf.get("description", "dage")
         body = Text.from_markup("\n".join(lines))
-        return Panel(body,
-                     title=f"[bold] {desc} [/]",
-                     subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
-                     border_style="blue", padding=(0, 1))
+        panel = Panel(body,
+                      title=f"[bold] {desc} [/]",
+                      subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
+                      border_style="blue", padding=(0, 1))
+
+        if not self.log_buf:
+            return panel
+        try:
+            term_h = os.get_terminal_size().lines
+        except OSError:
+            term_h = 40
+        # panel height ≈ layers + header/footer/status (6 lines overhead)
+        panel_h = min(len(topo_layers(self.nodes)), 14) + 6
+        log_h   = max(term_h - panel_h - 1, 5)
+        log_text = Text.from_ansi("\n".join(self.log_buf[-log_h:]))
+        return Group(panel, log_text)
 
 _display: DageDisplay | None = None
 
