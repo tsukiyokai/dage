@@ -393,6 +393,31 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
     return last_result
 
+# ==== Worktree Merge =======================================================
+
+def _merge_worktrees(auto_wt: dict[str, str], repo_dir: str, run_id: str):
+    """Merge worktree changes back to main repo via rsync-style copy."""
+    wt_base = os.path.join(repo_dir, "..", "continuous-claude-worktrees")
+    for node_name, wt_name in auto_wt.items():
+        wt_path = os.path.realpath(os.path.join(wt_base, wt_name))
+        if not os.path.isdir(wt_path):
+            continue
+        # rsync everything except .git from worktree to main repo
+        try:
+            _run_streamed(
+                f"_merge_{node_name}",
+                f'rsync -a --exclude=.git "{wt_path}/" "{repo_dir}/"',
+                shell=True)
+            _log(f"  merge: {node_name} -> main")
+            # cleanup worktree
+            _run_streamed(
+                f"_cleanup_{node_name}",
+                f'cd "{repo_dir}" && git worktree remove "{wt_path}" --force 2>/dev/null; '
+                f'git branch -D "{wt_name}" 2>/dev/null; true',
+                shell=True)
+        except Exception as e:
+            _log(f"  merge failed ({node_name}): {e}")
+
 # ==== Gate Auto-commit =====================================================
 
 def _auto_commit(gate_name: str, nodes: dict[str, Node],
@@ -770,6 +795,10 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     icon = "ok" if r.status == Status.SUCCESS else "FAIL"
                     _log(f"[{name}] {icon}  {r.duration:.1f}s"
                          + (f"  retries={r.retries}" if r.retries else ""))
+
+                # phase 2.5: merge worktree changes back to main
+                if auto_wt:
+                    _merge_worktrees(auto_wt, repo_dir, run_id)
 
                 # phase 3: gate propagation (with autofix + auto-commit)
                 for name in to_run:
