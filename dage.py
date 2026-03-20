@@ -1386,7 +1386,7 @@ def _call_claude(prompt: str, timeout: int = 120) -> str:
 def generate_plan(description: str) -> tuple[str, str]:
     """Two-phase plan generation: brainstorm design, then generate YAML."""
     _log("  phase 1: brainstorming...")
-    design = _call_claude(_BRAINSTORM_PROMPT + description, timeout=120)
+    design = _call_claude(_BRAINSTORM_PROMPT + description, timeout=180)
     _log(f"  design: {len(design)} chars")
 
     _log("  phase 2: generating YAML...")
@@ -1394,7 +1394,7 @@ def generate_plan(description: str) -> tuple[str, str]:
         f"\nDesign document (from brainstorming phase):\n{design}\n\n"
         f"Original task: {description}"
     )
-    raw = _call_claude(gen_prompt, timeout=120)
+    raw = _call_claude(gen_prompt, timeout=300)
     return _extract_yaml(raw), design
 
 
