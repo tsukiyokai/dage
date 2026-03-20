@@ -1189,7 +1189,13 @@ class DageDisplay:
                       subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
                       border_style="blue", padding=(0, 1))
 
-        log_text = Text.from_ansi("\n".join(self.log_buf[-200:]))
+        try:
+            term_h = os.get_terminal_size().lines
+        except OSError:
+            term_h = 40
+        log_h = max(term_h - content_h, 3)
+        log_text = Text.from_ansi("\n".join(self.log_buf[-log_h:]))
+
         layout = Layout()
         layout.split_column(
             Layout(log_text, name="log"),
