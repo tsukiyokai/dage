@@ -1147,7 +1147,7 @@ class DageDisplay:
         if len(visible) < log_h:
             visible = visible + [""] * (log_h - len(visible))
         log_text = Text.from_ansi("\n".join(visible))
-        return Group(panel, log_text)
+        return Group(log_text, panel)
 
 _display: DageDisplay | None = None
 
