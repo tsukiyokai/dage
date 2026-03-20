@@ -329,6 +329,7 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
         notes_path = Path(notes_file)
         output = notes_path.read_text().strip() if notes_path.exists() else ""
 
+        os.makedirs(node_dir, exist_ok=True)
         with open(os.path.join(node_dir, "ccx.log"), "w") as f:
             f.write(f"=== stdout ===\n{stdout}\n")
             f.write(f"=== stderr ===\n{stderr}\n")
