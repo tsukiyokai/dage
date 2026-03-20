@@ -1151,8 +1151,11 @@ class DageDisplay:
             term_h = os.get_terminal_size().lines
         except OSError:
             term_h = 40
-        panel_h = len(lines) + 2  # content lines + top/bottom border
-        log_h   = max(term_h - panel_h - 1, 5)
+        from io import StringIO
+        buf = RichConsole(file=StringIO(), width=self.console.width, force_terminal=True)
+        buf.print(panel)
+        panel_h = buf.file.getvalue().count("\n")
+        log_h   = max(term_h - panel_h, 3)
         visible = self.log_buf[-log_h:]
         # pad to fill terminal
         if len(visible) < log_h:
