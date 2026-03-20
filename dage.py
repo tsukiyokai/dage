@@ -297,7 +297,7 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
     node_dir = os.path.join(run_dir, node.name)
     os.makedirs(node_dir, exist_ok=True)
 
-    notes_file = f".dage/runs/{run_id}/{node.name}.notes.md"
+    notes_file = os.path.join(os.path.abspath(run_dir), f"{node.name}.notes.md")
     cmd = [
         "ccx",
         "-p",                  prompt,
@@ -326,7 +326,7 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
         )
         elapsed = time.monotonic() - t0
 
-        notes_path = Path(repo_dir) / notes_file
+        notes_path = Path(notes_file)
         output = notes_path.read_text().strip() if notes_path.exists() else ""
 
         with open(os.path.join(node_dir, "ccx.log"), "w") as f:
