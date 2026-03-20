@@ -216,6 +216,10 @@ _ANSI_RESET  = "\033[0m"
 
 def _log_line(name: str, line: str):
     """Format node output: color-coded right-aligned name │ content."""
+    if _display and not name.startswith("_"):
+        stripped = re.sub(r'\[[\d;]*m', '', line).strip()  # strip ANSI for summary
+        if stripped:
+            _display.node_last[name] = stripped
     if name.startswith("_"):
         _log(f"\033[2m  {name:>18} │ {line}{_ANSI_RESET}")
     else:
@@ -1075,6 +1079,7 @@ class DageDisplay:
         self.results      = results
         self.start_time   = start_time
         self.node_start:  dict[str, float] = {}
+        self.node_last:   dict[str, str]   = {}  # latest log line per node
         self.replan_count = 0
         self.log_buf: list[str] = []
         self.console      = RichConsole(stderr=True)
@@ -1112,13 +1117,19 @@ class DageDisplay:
                 lines.append(f"  [dim]     ⋮  ({total - shown} more)[/]")
                 break
             parts = []
+            running_details = []
             for name in layer:
                 r = self.results.get(name, NodeResult())
                 icon, style = _STATUS_ICON.get(r.status, ("?", "dim"))
                 if r.status == Status.RUNNING:
                     t0 = self.node_start.get(name, time.monotonic())
                     dur = self._fmt_dur(time.monotonic() - t0)
+                    hint = self.node_last.get(name, "")
+                    if len(hint) > 60:
+                        hint = hint[:57] + "..."
                     parts.append(f"[{style}]{icon} {name} {dur}[/]")
+                    if hint:
+                        running_details.append(f"       [dim]{hint}[/]")
                 elif r.status == Status.SUCCESS:
                     parts.append(f"[green]{icon} {name}[/] [dim]{self._fmt_dur(r.duration)}[/]")
                 elif r.status == Status.FAILED:
@@ -1127,6 +1138,7 @@ class DageDisplay:
                     parts.append(f"[{style}]{icon} {name}[/]")
                 shown += 1
             lines.append(f"  [dim]L{i:<2}[/]  {'   '.join(parts)}")
+            lines.extend(running_details)
 
         counts = {}
         for r in self.results.values():
@@ -1152,7 +1164,7 @@ class DageDisplay:
         layout = Layout()
         layout.split_column(
             Layout(log_text, name="log"),
-            Layout(panel, name="status", minimum=len(lines) + 2),
+            Layout(panel, name="status", size=len(lines) + 2),
         )
         return layout
 
