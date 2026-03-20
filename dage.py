@@ -1114,7 +1114,7 @@ class DageDisplay:
 
         lines = []
         layers = topo_layers(self.nodes)
-        shown, max_show = 0, 14
+        shown, max_show = 0, 8
         for i, layer in enumerate(layers):
             if shown >= max_show:
                 lines.append(f"  [dim]     ⋮  ({total - shown} more)[/]")
