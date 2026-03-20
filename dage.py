@@ -1155,7 +1155,7 @@ class DageDisplay:
         buf = RichConsole(file=StringIO(), width=self.console.width, force_terminal=True)
         buf.print(panel)
         panel_h = buf.file.getvalue().count("\n")
-        log_h   = max(term_h - panel_h, 3)
+        log_h   = max(term_h - panel_h - 1, 3)  # -1 for Live cursor line
         visible = self.log_buf[-log_h:]
         # pad to fill terminal
         if len(visible) < log_h:
