@@ -452,9 +452,9 @@ def _auto_commit(gate_name: str, nodes: dict[str, Node],
         _log(f"[commit] {msg}")
 
         if push:
-            _run_streamed(f"_push_{gate_name}",
-                          "git push", shell=True, cwd=repo_dir)
-            _log(f"[push] ok")
+            rc, _, _ = _run_streamed(f"_push_{gate_name}",
+                                     "git push", shell=True, cwd=repo_dir)
+            _log(f"[push] {'ok' if rc == 0 else 'FAIL (no remote?)'}")
     except Exception as e:
         _log(f"[commit] failed: {e}")
 
