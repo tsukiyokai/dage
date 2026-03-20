@@ -211,6 +211,17 @@ def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
 
 # ==== Executors ============================================================
 
+_ANSI_COLORS = [36, 32, 33, 35, 34, 91, 96, 92, 93, 95]  # cyan,green,yellow,magenta,blue,...
+_ANSI_RESET  = "\033[0m"
+
+def _log_line(name: str, line: str):
+    """Format node output: color-coded right-aligned name │ content."""
+    if name.startswith("_"):
+        _log(f"\033[2m  {name:>18} │ {line}{_ANSI_RESET}")
+    else:
+        c = _ANSI_COLORS[hash(name) % len(_ANSI_COLORS)]
+        _log(f"  \033[{c}m{name:>15}{_ANSI_RESET} │ {line}")
+
 def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
                   timeout=None) -> tuple[int, str, str]:
     """Run subprocess with [name]-prefixed live output. Returns (rc, stdout, stderr)."""
@@ -226,7 +237,7 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
     def _drain(stream, buf):
         for line in stream:
             buf.append(line)
-            _log(f"  {name} | {line.rstrip()}")
+            _log_line(name, line.rstrip())
 
     t1 = threading.Thread(target=_drain, args=(proc.stdout, stdout_buf), daemon=True)
     t2 = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf), daemon=True)
