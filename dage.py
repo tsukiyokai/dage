@@ -978,17 +978,12 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     _log("")
     print_summary(results)
 
-    # print report from meta/report nodes
+    # print report from meta nodes
     for name, node in nodes.items():
         r = results.get(name)
         if r and r.status == Status.SUCCESS and node.role == Role.META and r.output:
             _log("")
-            _log(f"{'─' * 60}")
-            _log(f"  {name} report:")
-            _log(f"{'─' * 60}")
-            for line in r.output.strip().split("\n"):
-                _log(f"  {line}")
-            _log(f"{'─' * 60}")
+            _log(r.output.strip())
 
     save_latest_link(repo_dir, run_id)
     return results
