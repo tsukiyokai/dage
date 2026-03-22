@@ -800,7 +800,7 @@ def call_replanner(wf: dict, nodes: dict[str, Node],
     )
 
     try:
-        raw = _call_claude(prompt, timeout=120)
+        raw = _call_claude(prompt, timeout=1800)
         raw = _extract_yaml(raw)
         result = yaml.safe_load(raw)
         if not isinstance(result, dict):
@@ -1574,7 +1574,7 @@ Output a structured DAG design. For each node: name, type, role, deps, prompt/cm
 
 Work streams: """
 
-def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
+def _call_claude(prompt: str, timeout: int = 1800, system: str = "") -> str:
     cmd = ["claude", "-p", prompt, "--output-format", "text",
            "--allowedTools", "*"]
     if system:
