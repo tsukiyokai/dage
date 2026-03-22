@@ -1808,66 +1808,178 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
 
 
 _MATURE_PROMPT_EN = """\
-You are a product thinker. Mature a raw idea into a well-defined project scope.
+You are a product design thinker. Turn a raw idea into a fully formed design spec.
 Make ALL decisions autonomously — do not ask questions, do not wait for input.
 
-1. UNDERSTAND: What is the user trying to achieve? What problem does this solve?
-2. SCOPE: Define clear boundaries — what's in, what's out. Apply YAGNI ruthlessly.
-3. APPROACHES: Consider 2-3 approaches, pick the best one, explain why.
-4. CONSTRAINTS: Identify technical constraints, dependencies, risks.
-5. SUCCESS CRITERIA: What does "done" look like? How do you verify it works?
+Anti-pattern: "This is too simple to need a design." Every project gets a design. \
+"Simple" projects are where unexamined assumptions cause the most wasted work.
 
-Output a concise design document (not code). Be specific and actionable.
+Process (execute all steps in one pass):
+
+1. EXPLORE CONTEXT: Mentally simulate checking the project state — what files, docs, \
+   existing patterns, and constraints likely exist? What's the current state of things?
+
+2. SCOPE CHECK: Does this request describe multiple independent subsystems? If so, \
+   decompose into sub-projects first. Each sub-project gets its own design. Don't refine \
+   details of something that needs decomposition first.
+
+3. UNDERSTAND PURPOSE: What is the user trying to achieve? What problem does this solve? \
+   What are the constraints and success criteria? Focus on purpose, not just mechanics.
+
+4. EXPLORE APPROACHES: Propose 2-3 different approaches with trade-offs. Lead with your \
+   recommended option and explain why. Don't just list — reason about which is best and why.
+
+5. PRESENT DESIGN: Cover these aspects, scaling each to its complexity \
+   (a few sentences if straightforward, up to 200-300 words if nuanced):
+   - Architecture: overall structure and key components
+   - Data flow: how information moves through the system
+   - Error handling: what can go wrong and how to handle it
+   - Testing: how to verify correctness
+
+6. DESIGN FOR ISOLATION AND CLARITY:
+   - Break into smaller units with one clear purpose each
+   - Each unit communicates through well-defined interfaces
+   - Each unit can be understood and tested independently
+   - For each unit: what does it do, how do you use it, what does it depend on?
+   - Test: can someone understand what a unit does without reading its internals? \
+     Can you change the internals without breaking consumers? If not, boundaries need work.
+
+7. EXISTING CODEBASE AWARENESS:
+   - Follow existing patterns. Don't propose unrelated refactoring.
+   - Where existing code has problems affecting the work (file too large, unclear boundaries, \
+     tangled responsibilities), include targeted improvements as part of the design — \
+     the way a good developer improves code they're working in.
+
+8. APPLY YAGNI RUTHLESSLY: Remove every feature that isn't strictly necessary. \
+   Fewer features done well beats many features done poorly.
+
+Output a design document. Be specific and actionable, not vague. No code — just design.
 
 Idea: """
 
 _MATURE_PROMPT_ZH = """\
-你是产品思考者。将原始想法打磨成定义清晰的项目范围。
+你是产品设计思考者。将原始想法转化为完整的设计规格。
 所有决策自主完成——不要提问，不要等待输入。
 
-1. 理解: 用户想达成什么？解决什么问题？
-2. 范围: 明确边界——做什么、不做什么。严格YAGNI。
-3. 方案: 考虑2-3种方案，选最优，说明理由。
-4. 约束: 识别技术约束、依赖、风险。
-5. 验收标准: "完成"长什么样？如何验证？
+反模式: "这太简单了不需要设计。" 每个项目都要有设计。\
+"简单"项目恰恰是未经审视的假设造成最多浪费的地方。
 
-输出简洁的设计文档（不是代码）。具体、可执行。
+流程（一次性执行所有步骤）:
+
+1. 探索上下文: 模拟检查项目状态——可能存在哪些文件、文档、现有模式和约束？当前状态如何？
+
+2. 范围检查: 需求是否描述了多个独立子系统？如果是，先分解为子项目。\
+   每个子项目单独设计。不要在需要分解的东西上花时间打磨细节。
+
+3. 理解目的: 用户想达成什么？解决什么问题？约束和成功标准是什么？\
+   聚焦目的，不仅仅是机制。
+
+4. 探索方案: 提出2-3种不同方案及其trade-off。以推荐方案领衔并解释理由。\
+   不要只列举——推理哪个最好以及为什么。
+
+5. 呈现设计: 覆盖以下方面，每个方面的篇幅与其复杂度成正比\
+   （直观的用几句话，有深度的用200-300字）:
+   - 架构: 整体结构和关键组件
+   - 数据流: 信息如何在系统中流动
+   - 错误处理: 什么可能出错，如何应对
+   - 测试: 如何验证正确性
+
+6. 为隔离性和清晰性而设计:
+   - 拆分为更小的单元，每个有单一明确目的
+   - 每个单元通过定义良好的接口通信
+   - 每个单元可以独立理解和测试
+   - 对每个单元: 它做什么，怎么用它，它依赖什么？
+   - 检验: 不读内部实现能否理解一个单元做什么？修改内部实现会不会破坏使用者？\
+     如果不能，边界需要重新设计。
+
+7. 现有代码库意识:
+   - 遵循现有模式。不要提议无关的重构。
+   - 当现有代码的问题影响到当前工作（文件过大、边界不清、职责纠缠），\
+     将针对性的改进纳入设计——就像一个好开发者在工作中顺手改善代码。
+
+8. 严格执行YAGNI: 移除每一个非严格必要的功能。\
+   少量功能做好胜过大量功能做差。
+
+输出设计文档。具体、可执行，不含糊。不要代码——只要设计。
 
 想法: """
 
 _MATURE_PROMPT = _p(_MATURE_PROMPT_EN, _MATURE_PROMPT_ZH)
 
 _PLAN_DOC_PROMPT_EN = """\
-You are a technical planner. Turn a design into a structured execution plan.
+You are a technical planner. Turn a design spec into a structured implementation plan.
 Make ALL decisions autonomously — do not ask questions.
 
-Given the design below, produce an implementation plan with:
-1. FILE STRUCTURE: Which files to create/modify, one responsibility per file.
-2. TASK BREAKDOWN: Ordered list of concrete tasks. Each task:
-   - What to build (specific, not vague)
-   - Which files to touch
-   - How to verify it works (test command or check)
-3. DEPENDENCY ORDER: Which tasks must complete before others can start.
-4. RISK AREAS: Where things are most likely to go wrong.
+Assume the engineer executing this plan has zero context for the codebase and \
+questionable taste. Document everything they need: which files to touch, how to test, \
+what docs to check. Give them the whole plan as bite-sized tasks.
 
-Keep it concise. No code snippets — just clear descriptions of what each task does.
+Process:
+
+1. SCOPE CHECK: If the design covers multiple independent subsystems that weren't \
+   decomposed, break into separate plans — one per subsystem. Each plan should produce \
+   working, testable software on its own.
+
+2. FILE STRUCTURE: Before defining tasks, map out which files will be created or modified \
+   and what each one is responsible for. This is where decomposition decisions get locked in.
+   - Design units with clear boundaries and well-defined interfaces
+   - One clear responsibility per file. Prefer smaller, focused files over large ones
+   - Files that change together should live together. Split by responsibility, not by technical layer
+   - In existing codebases, follow established patterns. If a file has grown unwieldy, \
+     including a split in the plan is reasonable
+
+3. TASK BREAKDOWN: Ordered list of concrete tasks. Bite-sized granularity — \
+   each step is one action (a few minutes, not an hour). For each task:
+   - What to build (specific, not "add validation")
+   - Which files to create/modify (exact paths)
+   - How to verify it works (exact test commands with expected output)
+   - What to commit and commit message
+
+4. DEPENDENCY ORDER: Which tasks must complete before others can start? \
+   Which can run in parallel? Be explicit.
+
+5. RISK AREAS: Where things are most likely to go wrong. What to watch for.
+
+Principles: DRY. YAGNI. TDD (write failing test first, then implement). Frequent commits.
+
+Output a structured plan document. No code snippets — clear descriptions of what each task does.
 
 Design: """
 
 _PLAN_DOC_PROMPT_ZH = """\
-你是技术规划师。将设计转化为结构化的执行计划。
+你是技术规划师。将设计规格转化为结构化的实施计划。
 所有决策自主完成——不要提问。
 
-基于下方设计，产出实施计划:
-1. 文件结构: 创建/修改哪些文件，每个文件单一职责。
-2. 任务分解: 有序的具体任务列表。每个任务:
-   - 构建什么（具体，不含糊）
-   - 涉及哪些文件
-   - 如何验证（测试命令或检查方式）
-3. 依赖顺序: 哪些任务必须先完成。
-4. 风险点: 最可能出问题的地方。
+假设执行此计划的工程师对代码库零上下文且品味存疑。\
+记录他们需要的一切: 动哪些文件、怎么测试、查什么文档。\
+将完整计划拆解为小粒度任务。
 
-简洁。不要代码片段——只要清晰描述每个任务做什么。
+流程:
+
+1. 范围检查: 如果设计涵盖了多个未分解的独立子系统，\
+   拆成独立计划——每个子系统一份。每份计划应能独立产出可工作、可测试的软件。
+
+2. 文件结构: 在定义任务之前，先列出要创建/修改的文件及其职责。\
+   这是分解决策被锁定的地方。
+   - 设计清晰边界和定义良好的接口
+   - 每个文件单一职责。优先选择小而聚焦的文件而非大而全的文件
+   - 一起变更的文件应该放在一起。按职责拆分，不按技术层拆分
+   - 在现有代码库中遵循既有模式。如果某文件已经臃肿，计划中包含拆分是合理的
+
+3. 任务分解: 有序的具体任务列表。小粒度——每步一个动作（几分钟，不是一小时）。\
+   每个任务:
+   - 构建什么（具体，不是"添加校验"）
+   - 创建/修改哪些文件（精确路径）
+   - 如何验证（精确的测试命令和预期输出）
+   - 提交什么以及commit message
+
+4. 依赖顺序: 哪些任务必须先完成？哪些可以并行？明确说明。
+
+5. 风险点: 最可能出问题的地方。需要注意什么。
+
+原则: DRY. YAGNI. TDD（先写失败测试，再实现）。频繁提交。
+
+输出结构化计划文档。不要代码片段——清晰描述每个任务做什么。
 
 设计: """
 
