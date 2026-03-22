@@ -1734,24 +1734,24 @@ def _extract_yaml(text: str) -> str:
     m = re.search(r'```(?:ya?ml)?\s*\n(.+?)```', text, re.DOTALL)
     if m:
         return m.group(1).strip()
-    # no fence: strip leading/trailing non-YAML lines
+    # no fence: find first line with a YAML key (word: value), take everything
+    # from there until a line that's clearly not YAML (backtick, etc.)
     lines = text.strip().split("\n")
-    start = 0
+    start = None
     for i, line in enumerate(lines):
         s = line.strip()
-        if not s:
-            continue
-        if s.startswith("#") or s.startswith("---") or (":" in s and not s.startswith("`")):
+        # a YAML document starts with a key: value, a comment #, or ---
+        if s and (":" in s and not s.startswith("`")) or s.startswith("---"):
             start = i
             break
+    if start is None:
+        return text.strip()
+    # from start, include lines until we hit clearly non-YAML content
     end = len(lines)
-    for i in range(len(lines) - 1, start - 1, -1):
+    for i in range(start + 1, len(lines)):
         s = lines[i].strip()
-        if not s:
-            continue
-        if s.startswith("`") or s.startswith("*"):
+        if s.startswith("`"):
             end = i
-        else:
             break
     return "\n".join(lines[start:end]).strip()
 
