@@ -1574,12 +1574,9 @@ Output a structured DAG design. For each node: name, type, role, deps, prompt/cm
 
 Work streams: """
 
-_PLAN_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"]
-
 def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
-    cmd = ["claude", "-p", prompt, "--output-format", "text"]
-    for tool in _PLAN_TOOLS:
-        cmd += ["--allowedTools", tool]
+    cmd = ["claude", "-p", prompt, "--output-format", "text",
+           "--allowedTools", "*"]
     if system:
         cmd += ["--append-system-prompt", system]
     try:
