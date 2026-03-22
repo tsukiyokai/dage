@@ -91,7 +91,7 @@ def load_workflow(path: str) -> dict:
     return wf
 
 # bounded roles: auto-cap max_runs to prevent goal drift
-_ROLE_MAX_RUNS = {Role.CONTEXT: 1, Role.META: 1}
+_ROLE_MAX_RUNS = {Role.CONTEXT: 1, Role.META: 1, Role.GATE: 1}
 
 def _build_one_node(name: str, spec: dict, defaults: dict) -> Node:
     if not isinstance(spec, dict):
@@ -573,7 +573,15 @@ def _prune_worktrees(repo_dir: str):
         wt_path = os.path.join(wt_base, name)
         if not os.path.isdir(wt_path):
             continue
-        # check if branch has unmerged changes
+        # check for uncommitted working tree changes
+        _, dirty, _ = _run_streamed(
+            f"_dirty_{name}",
+            f'cd "{wt_path}" && git status --porcelain 2>/dev/null',
+            shell=True)
+        if dirty.strip():
+            _log(f"  keeping {name}: uncommitted changes")
+            continue
+        # check if branch has unmerged changes vs main
         rc, _, _ = _run_streamed(
             f"_check_{name}",
             f'cd "{wt_path}" && git diff --quiet HEAD main 2>/dev/null',
@@ -1530,11 +1538,12 @@ Rules:
 - deps only when B needs A's output or A must succeed first
 - maximize parallelism: independent tasks have no deps between them
 - gate after every implementation node (test/build/lint must pass before continuing)
+- claude gate after shell gate when impl modifies error handling/control flow (error path audit)
 - context nodes gather info, produce nodes create artifacts, gate nodes verify
 - shell for deterministic commands (git/test/build), claude for reasoning/analysis/coding
 - short descriptive snake_case node names
 
-Output ONLY valid YAML. No fences, no commentary.
+Output format: raw YAML only (see constraint after task).
 
 Task: """
 
@@ -1552,6 +1561,10 @@ For each work stream, decide:
    - A `shell` gate node (the verification command from the work stream)
    If a stream needs codebase context first, add a `context` node before it.
    If the workflow needs a final summary, add a `meta` node at the end.
+   If implementation modifies error handling or control flow, add a `claude` gate
+   after the shell gate. Prompt: trace every error/exception path through the changed
+   code — verify caught types match what callees raise, no state lost on failure paths,
+   no downstream code reads state that a failure path leaves unset.
 
 2. CLASSIFY each node:
    - type: `claude` (AI reasoning/analysis/coding) or `shell` (deterministic command)
@@ -1566,6 +1579,8 @@ For each work stream, decide:
    - State what to achieve + what upstream context to use
    - Do NOT prescribe implementation steps — the agent decides in context
    - Inject upstream context via ${nodes.NAME.output}
+   - Do NOT include mechanism instructions (e.g. "write findings to notes file",
+     "signal completion") — the runtime auto-injects these
 
 5. RESOURCE ESTIMATE: For each claude node, default max_runs = 0 (unlimited,
    completion-signal-driven). Only cap to limit cost:
@@ -1697,7 +1712,23 @@ Output a structured work stream document.
 
 Design: """
 
-def generate_plan(description: str, skills: list[str] = None) -> tuple[str, str]:
+def _generate_yaml(design: str, description: str, skill_ctx: str = "") -> str | None:
+    """Phase 4: turn design document into YAML workflow. Returns None on failure."""
+    _log("  generating YAML from design...")
+    gen_prompt = _PLAN_PROMPT + (
+        f"\nDesign document:\n{design}\n\n"
+        f"Original task: {description}\n\n"
+        "OUTPUT CONSTRAINT: Your entire response is piped directly into a YAML parser. "
+        "First line must be 'nodes:'. No preamble, no commentary, no Insight blocks, no markdown."
+    )
+    raw = _call_claude(gen_prompt, timeout=1800, system=skill_ctx)
+    try:
+        return _extract_yaml(raw)
+    except ValueError as e:
+        _log(f"  error: {e}")
+        return None
+
+def generate_plan(description: str, skills: list[str] = None) -> tuple[str | None, str]:
     """Four-phase plan generation: mature → work streams → DAG design → YAML."""
     skill_ctx = _load_skills(skills) if skills else ""
     if skill_ctx:
@@ -1722,39 +1753,41 @@ def generate_plan(description: str, skills: list[str] = None) -> tuple[str, str]
     _log(f"  dag: {len(design)} chars")
 
     # phase 4: generate YAML
-    _log("  phase 4/4: generating YAML...")
-    gen_prompt = _PLAN_PROMPT + (
-        f"\nDesign document:\n{design}\n\n"
-        f"Original task: {description}"
-    )
-    raw = _call_claude(gen_prompt, timeout=1800, system=skill_ctx)
-    return _extract_yaml(raw), design
+    raw = _generate_yaml(design, description, skill_ctx)
+    return raw, design
 
 def _extract_yaml(text: str) -> str:
     # try to extract from code fence first (handles ```yaml ... ``` anywhere in text)
     m = re.search(r'```(?:ya?ml)?\s*\n(.+?)```', text, re.DOTALL)
     if m:
-        return m.group(1).strip()
-    # no fence: find first line with a YAML key (word: value), take everything
-    # from there until a line that's clearly not YAML (backtick, etc.)
-    lines = text.strip().split("\n")
-    start = None
-    for i, line in enumerate(lines):
-        s = line.strip()
-        # a YAML document starts with a key: value, a comment #, or ---
-        if s and (":" in s and not s.startswith("`")) or s.startswith("---"):
-            start = i
-            break
-    if start is None:
-        return text.strip()
-    # from start, include lines until we hit clearly non-YAML content
-    end = len(lines)
-    for i in range(start + 1, len(lines)):
-        s = lines[i].strip()
-        if s.startswith("`"):
-            end = i
-            break
-    return "\n".join(lines[start:end]).strip()
+        candidate = m.group(1).strip()
+    else:
+        # no fence: find first line with a YAML key (word: value), take everything
+        # from there until a line that's clearly not YAML (backtick, etc.)
+        lines = text.strip().split("\n")
+        start = None
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if (s and ":" in s and not s.startswith("`")) or s.startswith("---"):
+                start = i
+                break
+        if start is None:
+            raise ValueError("no YAML structure found in AI output")
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            s = lines[i].strip()
+            if s.startswith("`"):
+                end = i
+                break
+        candidate = "\n".join(lines[start:end]).strip()
+    # sanity check: must parse as a dict with 'nodes'
+    try:
+        parsed = yaml.safe_load(candidate)
+    except yaml.YAMLError as e:
+        raise ValueError(f"extracted text is not valid YAML: {e}") from e
+    if not isinstance(parsed, dict) or "nodes" not in parsed:
+        raise ValueError("extracted YAML has no 'nodes' key")
+    return candidate
 
 # ==== CLI
 
@@ -1787,6 +1820,8 @@ def main():
                         help="output file (default: .dage/workflows/<timestamp>.yaml)")
     p_plan.add_argument("--run", action="store_true",
                         help="generate then immediately execute")
+    p_plan.add_argument("--from-design",
+                        help="skip phases 1-3, generate YAML from existing design file")
     p_plan.add_argument("--skills", nargs="+", default=[],
                         help="inject skill knowledge into plan phases")
 
@@ -1835,22 +1870,40 @@ def main():
         if os.path.isfile(desc):
             desc = Path(desc).read_text().strip()
             _log(f"loaded idea from: {args.description}")
-        _log("generating workflow...")
-        try:
-            raw, design = generate_plan(desc, skills=args.skills)
-        except RuntimeError as e:
-            _log(f"error: {e}")
-            sys.exit(1)
 
-        plan_dir = os.path.join(".dage", "plans")
-        os.makedirs(plan_dir, exist_ok=True)
         ts = time.strftime("%Y%m%d-%H%M%S")
 
-        design_file = os.path.join(plan_dir, f"{ts}-design.md")
-        with open(design_file, "w") as f:
-            f.write(f"# Design: {desc[:80]}\n\n{design}\n")
-        _log(f"  design: {design_file}")
+        if args.from_design:
+            # resume: skip phases 1-3, only run phase 4
+            design_path = args.from_design
+            if not os.path.isfile(design_path):
+                _log(f"error: design file not found: {design_path}")
+                sys.exit(1)
+            design = Path(design_path).read_text().strip()
+            _log(f"  resuming from design: {design_path}")
+            skill_ctx = _load_skills(args.skills) if args.skills else ""
+            raw = _generate_yaml(design, desc, skill_ctx)
+        else:
+            _log("generating workflow...")
+            try:
+                raw, design = generate_plan(desc, skills=args.skills)
+            except RuntimeError as e:
+                _log(f"error: {e}")
+                sys.exit(1)
 
+            # always save design (phases 1-3 output) regardless of phase 4 result
+            plan_dir = os.path.join(".dage", "plans")
+            os.makedirs(plan_dir, exist_ok=True)
+            design_file = os.path.join(plan_dir, f"{ts}-design.md")
+            with open(design_file, "w") as f:
+                f.write(f"# Design: {desc[:80]}\n\n{design}\n")
+            _log(f"  design: {design_file}")
+
+        if raw is None:
+            _log("error: YAML generation failed (see above)")
+            sys.exit(1)
+
+        # validate generated YAML (semantic check)
         try:
             wf     = yaml.safe_load(raw)
             nodes  = build_nodes(wf)
@@ -1863,6 +1916,7 @@ def main():
         except Exception as e:
             _log(f"warning: validation failed: {e}")
 
+        # always write YAML if _extract_yaml passed (structurally valid)
         wf_dir = os.path.join(".dage", "workflows")
         os.makedirs(wf_dir, exist_ok=True)
         out = args.output or os.path.join(wf_dir, f"{ts}.yaml")
