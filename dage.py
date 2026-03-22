@@ -1581,7 +1581,7 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     t0 = time.monotonic()
     stop_ev = threading.Event()
     def _ticker():
-        while not stop_ev.wait(5):
+        while not stop_ev.wait(30):
             _log(f"    ... {time.monotonic() - t0:.0f}s")
     ticker = threading.Thread(target=_ticker, daemon=True)
     ticker.start()
