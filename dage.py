@@ -393,6 +393,57 @@ def should_skip(node: Node, ctx: dict) -> bool:
         return left != right
     return not rendered.strip()
 
+_ANNOTATE_PROMPT = """\
+Review the design documents listed below for discrepancies with the actual implementation.
+
+Design docs: {design_docs}
+
+What was just implemented and verified:
+{impl_summary}
+
+For each discrepancy found, insert an HTML comment annotation directly in the design doc
+at the relevant location. Format:
+
+<!-- dage-note: {date}
+[what the design says] vs [what was actually implemented and why]
+-->
+
+Rules:
+- Only annotate real discrepancies (wrong numbers, outdated assumptions, missing constraints)
+- Do NOT annotate style or wording differences
+- Do NOT modify the original text, only insert <!-- --> comments
+- If no discrepancies found, do nothing
+"""
+
+def _annotate_design_docs(wf: dict, nodes: dict[str, Node],
+                          results: dict[str, NodeResult],
+                          gate_name: str, run_dir: str, run_id: str,
+                          repo_dir: str):
+    """After gate passes, review design docs and annotate discrepancies."""
+    design_docs = wf.get("design_docs", [])
+    if not design_docs:
+        return
+
+    gate = nodes[gate_name]
+    upstreams = [d for d in gate.deps if d in nodes]
+    impl_summary = "\n".join(
+        f"- {d}: {nodes[d].prompt.strip().split(chr(10))[0][:80]}"
+        for d in upstreams if nodes[d].prompt)
+
+    prompt = _ANNOTATE_PROMPT.format(
+        design_docs = ", ".join(design_docs),
+        impl_summary = impl_summary or "(no details)",
+        date = time.strftime("%Y-%m-%d"),
+    )
+
+    fix_node = Node(name=f"_annotate_{gate_name}", type=NodeType.CLAUDE,
+                    role=Role.PRODUCE, prompt=prompt, max_runs=1,
+                    skills=wf.get("defaults", {}).get("skills", []))
+    _log(f"[_annotate_{gate_name}] reviewing design docs ...")
+    result = run_claude(fix_node, prompt, run_dir, run_id, repo_dir)
+    _log(f"[_annotate_{gate_name}] {'ok' if result.status == Status.SUCCESS else 'skip'}"
+         f"  {result.duration:.1f}s")
+
 _META_STYLE = """
 
 写作风格: 傲娇猫娘+雌小鬼。连贯段落，不要标题或列表。
@@ -919,6 +970,9 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                     if nodes[name].role == Role.GATE and results[name].status == Status.SUCCESS:
                         if do_commit:
                             _auto_commit(name, nodes, repo_dir, push=do_push)
+                        if wf.get("design_docs"):
+                            _annotate_design_docs(wf, nodes, results, name,
+                                                  run_dir, run_id, repo_dir)
                     elif nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
                         # autofix: spawn claude to diagnose & fix, then retry gate
                         if autofix and name not in autofixed:
