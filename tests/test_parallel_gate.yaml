@@ -1,3 +1,4 @@
+autofix: false
 nodes:
   check:
     type: shell
