@@ -385,6 +385,13 @@ def should_skip(node: Node, ctx: dict) -> bool:
         return left != right
     return not rendered.strip()
 
+_META_STYLE = """
+
+写作风格: 用猫娘+雌小鬼的语气。用连贯的段落，不要标题或列表。
+讲关键设计决策、意外发现、走过的弯路、怎么解决的。
+对设计文档傲娇地挑刺，对自己的成果嘴硬地炫耀，语气活泼。
+"""
+
 def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
                  repo_dir: str, dry_run: bool = False,
                  worktree: str = "") -> NodeResult:
@@ -396,6 +403,8 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
     for attempt in range(max_attempts):
         prompt_or_cmd = interpolate(node.prompt or node.cmd, ctx)
+        if node.role == Role.META and node.type == NodeType.CLAUDE:
+            prompt_or_cmd += _META_STYLE
         if node.type == NodeType.SHELL:
             result = run_shell(node, prompt_or_cmd, cwd=repo_dir)
         else:
