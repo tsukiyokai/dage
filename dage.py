@@ -1744,6 +1744,8 @@ def main():
     p_plan.add_argument("description", help="task description or path to idea file")
     p_plan.add_argument("-o", "--output",
                         help="output file (default: .dage/workflows/<timestamp>.yaml)")
+    p_plan.add_argument("--run", action="store_true",
+                        help="generate then immediately execute")
 
     args = parser.parse_args()
 
@@ -1824,6 +1826,22 @@ def main():
         with open(out, "w") as f:
             f.write(raw + "\n")
         _log(f"wrote {out}")
+
+        if args.run:
+            _log("")
+            wf = load_workflow(out)
+            wf["_yaml_path"] = os.path.abspath(out)
+            nodes = build_nodes(wf)
+            errors = validate_workflow(nodes)
+            if errors:
+                for e in errors:
+                    _log(f"error: {e}")
+                sys.exit(1)
+            repo_dir = os.path.abspath(
+                wf.get("vars", {}).get("repo_dir", "."))
+            results = run_dag(wf, nodes, repo_dir)
+            if any(r.status == Status.FAILED for r in results.values()):
+                sys.exit(1)
 
     else:
         parser.print_help()
