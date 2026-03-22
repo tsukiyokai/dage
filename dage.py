@@ -1574,7 +1574,7 @@ Output a structured DAG design. For each node: name, type, role, deps, prompt/cm
 Work streams: """
 
 def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
-    cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if system:
         cmd += ["--append-system-prompt", system]
     env = os.environ.copy()
