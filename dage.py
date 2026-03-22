@@ -308,7 +308,6 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
     t2.join()
     return proc.returncode, "".join(stdout_buf), "".join(stderr_buf)
 
-
 _SKILL_SEARCH_PATHS = [
     os.path.expanduser("~/.claude/skills/{name}"),
     ".claude/skills/{name}",
@@ -459,7 +458,6 @@ Rules:
 - If no real discrepancies, do nothing
 """
 
-
 def _annotate_design_docs(wf: dict, nodes: dict[str, Node],
                           results: dict[str, NodeResult],
                           gate_name: str, run_dir: str, run_id: str,
@@ -490,9 +488,11 @@ def _annotate_design_docs(wf: dict, nodes: dict[str, Node],
          f"  {result.duration:.1f}s")
 
 _META_STYLE = """
-
-写作风格: 傲娇猫娘+雌小鬼。连贯段落，不要标题或列表。
-语气特征: 句尾偶尔带猫叫口癖但不过度、对上游设计挑刺吐槽、对自己成果嘴硬炫耀、遇到困难傲娇不肯承认、偶尔用♡调皮。技术内容必须准确，语气不牺牲信息量。
+写作风格: 猫娘+雌小鬼。连贯段落，不要标题或列表。
+"雌小鬼"是二次元常见的一类角色，她们总是以高傲、嚣张、轻视、调笑的态度对待年长者，
+而一旦被"教训"后总是很容易服软并露出该年龄应有的行为。
+语气特征: 句尾偶尔带猫叫口癖但不过度、对上游设计挑刺吐槽、对自己成果嘴硬炫耀、
+遇到困难傲娇不肯承认、偶尔用♡调皮。技术内容必须准确，语气不牺牲信息量。
 """
 
 def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
@@ -646,7 +646,6 @@ Instructions:
 3. Run the gate command yourself to verify
 """
 
-
 def _autofix_gate(gate: Node, gate_result: NodeResult,
                   nodes: dict[str, Node], ctx: dict,
                   wf: dict, run_dir: str, run_id: str,
@@ -716,10 +715,10 @@ ccx prompt writing guide:
 - Focus on: What to achieve + upstream context. Do NOT say "write to notes" (ccx does it).
 - Inject upstream context via ${{nodes.NAME.output}} — the upstream node's notes file text.
 - max_runs = ccx iterations (each is a full Claude Code session):
-    0 unlimited: stopped by completion signal (default, recommended)
-    1-3 cap for simple tasks if you want to limit cost
-    5-10 cap for moderate tasks
-    10+ cap for complex tasks (usually unnecessary with completion signal)
+    0     unlimited: stopped by completion signal (default, recommended)
+    1-3   cap for simple tasks if you want to limit cost
+    5-10  cap for moderate tasks
+    10+   cap for complex tasks (usually unnecessary with completion signal)
 - For simple info gathering: use `type: shell` with a command instead of ccx.
 - After implementation nodes, always add a shell gate node (cargo test, pytest, make).
 
@@ -737,7 +736,6 @@ Node schema:
     timeout: "30m" # e.g. 1h, 5m, 30s
     max_runs: 0 # ccx iterations (0=unlimited, completion-signal-driven)
 """
-
 
 _REPLAN_PROMPT = """You are a workflow replanner. A running DAG needs adjustment.
 
@@ -779,7 +777,6 @@ Output ONLY valid YAML (no fences, no commentary):
         Context: ...
       max_runs: 0 # ccx iterations (0=unlimited, default)
 """
-
 
 def call_replanner(wf: dict, nodes: dict[str, Node],
                    results: dict[str, NodeResult],
@@ -1493,8 +1490,8 @@ Turn the task description into a valid dage YAML workflow.
 
 """ + _DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}") + """
 Additional schema fields (plan-only):
-  condition: "expr" # skip if false
-  adaptive: true # enable replan signal detection (default: false)
+  condition: "expr"    # skip if false
+  adaptive: true       # enable replan signal detection (default: false)
   vars:
     key: value
 
@@ -1545,8 +1542,6 @@ Output ONLY valid YAML. No fences, no commentary.
 
 Task: """
 
-
-
 _BRAINSTORM_PROMPT = """You are a workflow architect. An execution plan is provided below (already brainstormed
 and structured). Design a DAG execution plan from it.
 Think step by step, making all decisions autonomously.
@@ -1571,8 +1566,6 @@ what it reads as input, and what it produces as output.
 
 Task: """
 
-
-
 def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     cmd = ["claude", "-p", prompt, "--output-format", "text"]
     if system:
@@ -1586,7 +1579,6 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     if proc.returncode != 0:
         raise RuntimeError(f"claude failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
-
 
 _MATURE_PROMPT = """You are a product design thinker. Turn a raw idea into a fully formed design spec.
 Make ALL decisions autonomously — do not ask questions, do not wait for input.
@@ -1639,7 +1631,6 @@ Output a design document. Be specific and actionable, not vague. No code — jus
 
 Idea: """
 
-
 _PLAN_DOC_PROMPT = """You are a technical planner. Turn a design spec into a structured implementation plan.
 Make ALL decisions autonomously — do not ask questions.
 
@@ -1690,8 +1681,6 @@ Output a structured plan document with key interface signatures and logic for ea
 
 Design: """
 
-
-
 def generate_plan(description: str) -> tuple[str, str]:
     """Four-phase plan generation: mature idea → execution plan → DAG design → YAML."""
 
@@ -1721,7 +1710,6 @@ def generate_plan(description: str) -> tuple[str, str]:
     raw = _call_claude(gen_prompt, timeout=300)
     return _extract_yaml(raw), design
 
-
 def _extract_yaml(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -1731,7 +1719,6 @@ def _extract_yaml(text: str) -> str:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     return text
-
 
 # ==== CLI
 
