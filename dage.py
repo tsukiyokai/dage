@@ -394,25 +394,29 @@ def should_skip(node: Node, ctx: dict) -> bool:
     return not rendered.strip()
 
 _ANNOTATE_PROMPT = """\
-Review the design documents listed below for discrepancies with the actual implementation.
+Review design docs against the actual implementation. Think deeply about whether
+each difference is a real problem or an intentional design evolution.
 
 Design docs: {design_docs}
 
 What was just implemented and verified:
 {impl_summary}
 
-For each discrepancy found, insert an HTML comment annotation directly in the design doc
-at the relevant location. Format:
+For each confirmed discrepancy:
+1. Fix the design doc text to match reality (update numbers, constraints, descriptions)
+2. Insert an HTML comment ABOVE the fix recording what changed and why:
 
 <!-- dage-note: {date}
-[what the design says] vs [what was actually implemented and why]
+CHANGED: [original text] -> [new text]
+REASON: [why the implementation diverged, what was discovered during implementation]
 -->
 
 Rules:
-- Only annotate real discrepancies (wrong numbers, outdated assumptions, missing constraints)
-- Do NOT annotate style or wording differences
-- Do NOT modify the original text, only insert <!-- --> comments
-- If no discrepancies found, do nothing
+- Think before acting: is this a real error, or was it an intentional simplification in the doc?
+- Fix real issues: wrong numbers, outdated assumptions, missing constraints, incorrect formulas
+- Skip: style differences, wording preferences, level-of-detail choices
+- Every fix MUST have a dage-note comment above it recording the change
+- If no real discrepancies, do nothing
 """
 
 def _annotate_design_docs(wf: dict, nodes: dict[str, Node],
