@@ -1578,14 +1578,14 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     if system:
         cmd += ["--append-system-prompt", system]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        rc, stdout, stderr = _run_streamed("_plan", cmd, timeout=timeout)
     except FileNotFoundError:
         raise RuntimeError("'claude' CLI not found — install Claude Code first")
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"claude timed out ({timeout}s)")
-    if proc.returncode != 0:
-        raise RuntimeError(f"claude failed: {proc.stderr.strip()}")
-    return proc.stdout.strip()
+    if rc != 0:
+        raise RuntimeError(f"claude failed: {stderr.strip()}")
+    return stdout.strip()
 
 _MATURE_PROMPT = """You are a product design thinker. Turn a raw idea into a fully formed design spec.
 Make ALL decisions autonomously — do not ask questions, do not wait for input.
