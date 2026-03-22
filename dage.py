@@ -25,7 +25,7 @@ from typing import Any
 
 import yaml
 
-# ==== Enums ================================================================
+# ==== Enums
 
 class Role(Enum):
     CONTEXT  = "context"
@@ -46,7 +46,7 @@ class Status(Enum):
     FAILED  = "failed"
     SKIPPED = "skipped"
 
-# ==== Data Structures ======================================================
+# ==== Data Structures
 
 @dataclass
 class Node:
@@ -81,7 +81,7 @@ class NodeResult:
             d["cost"] = round(self.cost, 4)
         return d
 
-# ==== YAML Loading =========================================================
+# ==== YAML Loading
 
 def load_workflow(path: str) -> dict:
     with open(path) as f:
@@ -141,7 +141,7 @@ def validate_workflow(nodes: dict[str, Node]) -> list[str]:
         errors.append(f"cycle detected: {e}")
     return errors
 
-# ==== Variable Interpolation ===============================================
+# ==== Variable Interpolation
 
 _max_output: int = 0  # workflow-level cap for ${nodes.X.output}, 0 = unlimited
 
@@ -170,7 +170,7 @@ def interpolate(template: str, ctx: dict) -> str:
     """Replace ${...} references with values from context."""
     return re.sub(r'\$\{([^}]+)\}', lambda m: _resolve_path(ctx, m.group(1)), template)
 
-# ==== Execution Context ====================================================
+# ==== Execution Context
 
 def build_context(wf: dict, results: dict[str, NodeResult], run_id: str) -> dict:
     return {
@@ -183,7 +183,7 @@ def _build_summary(results: dict[str, NodeResult]) -> str:
     return "\n".join(f"  {n}: {r.status.value} ({r.duration:.0f}s)"
                      for n, r in results.items())
 
-# ==== Topo Sort ============================================================
+# ==== Topo Sort
 
 def topo_layers(nodes: dict[str, Node]) -> list[list[str]]:
     """Return nodes grouped by topological layers (ready-at-same-time)."""
@@ -198,7 +198,7 @@ def topo_layers(nodes: dict[str, Node]) -> list[list[str]]:
             ts.done(name)
     return layers
 
-# ==== Dynamic Scheduling ===================================================
+# ==== Dynamic Scheduling
 
 def next_runnable(nodes: dict[str, Node], results: dict[str, NodeResult],
                   blocked: set[str]) -> list[str]:
@@ -215,7 +215,7 @@ def next_runnable(nodes: dict[str, Node], results: dict[str, NodeResult],
     runnable.sort()
     return runnable
 
-# ==== Gate Propagation =====================================================
+# ==== Gate Propagation
 
 def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
     """Find all nodes transitively downstream of a failed gate."""
@@ -232,7 +232,7 @@ def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
             queue.extend(children[n])
     return blocked
 
-# ==== Executors ============================================================
+# ==== Executors
 
 _active_procs: list[subprocess.Popen] = []
 _active_procs_lock = threading.Lock()
@@ -418,7 +418,7 @@ def _parse_timeout(timeout: str) -> float | None:
         elif unit == 's': total += n
     return total if total > 0 else None
 
-# ==== DAG Engine ===========================================================
+# ==== DAG Engine
 
 def should_skip(node: Node, ctx: dict) -> bool:
     if not node.condition:
@@ -432,7 +432,7 @@ def should_skip(node: Node, ctx: dict) -> bool:
         return left != right
     return not rendered.strip()
 
-# ==== Prompt Templates (en + zh) ===========================================
+# ==== Prompt Templates (en + zh)
 
 _LANG = "zh"  # default language for prompts, overridable via wf["lang"]
 
@@ -554,7 +554,7 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
     return last_result
 
-# ==== Worktree Merge =======================================================
+# ==== Worktree Merge
 
 def _merge_single_worktree(node_name: str, wt_name: str,
                            repo_dir: str) -> bool:
@@ -628,7 +628,7 @@ def _prune_worktrees(repo_dir: str):
     if pruned:
         _log(f"  pruned worktrees: {pruned}")
 
-# ==== Gate Auto-commit =====================================================
+# ==== Gate Auto-commit
 
 def _auto_commit(gate_name: str, nodes: dict[str, Node],
                  repo_dir: str, push: bool = False):
@@ -662,7 +662,7 @@ def _auto_commit(gate_name: str, nodes: dict[str, Node],
     except Exception as e:
         _log(f"[commit] failed: {e}")
 
-# ==== Gate Autofix =========================================================
+# ==== Gate Autofix
 
 _AUTOFIX_PROMPT_EN = """\
 A build/test gate failed. Diagnose and fix the issue.
@@ -734,7 +734,7 @@ def _autofix_gate(gate: Node, gate_result: NodeResult,
          f"  {retry.duration:.1f}s")
     return retry
 
-# ==== Adaptive Replanning ==================================================
+# ==== Adaptive Replanning
 
 def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
                   layer: list[str]) -> tuple[str, str] | None:
@@ -1023,7 +1023,7 @@ def _confirm_replan() -> bool:
     except (EOFError, KeyboardInterrupt):
         return False
 
-# ==== Hot Reload ============================================================
+# ==== Hot Reload
 
 def _hot_reload(yaml_path: str, nodes: dict[str, Node],
                 results: dict[str, NodeResult], blocked: set[str],
@@ -1068,7 +1068,7 @@ def _hot_reload(yaml_path: str, nodes: dict[str, Node],
         _log(f"[hot-reload] failed: {e}")
         return False
 
-# ==== DAG Runner ===========================================================
+# ==== DAG Runner
 
 def _reload_config(wf: dict) -> dict:
     """Extract mutable config from workflow dict."""
@@ -1353,7 +1353,7 @@ def _load_resume_state(nodes: dict[str, Node], from_node: str,
             break
     return results, blocked
 
-# ==== State Persistence ====================================================
+# ==== State Persistence
 
 def _save_json(path: str, data):
     with open(path, "w") as f:
@@ -1387,9 +1387,9 @@ def _find_latest_run(repo_dir: str) -> str | None:
             return run_dir
     return None
 
-# ==== Output ===============================================================
+# ==== Output
 
-# ==== TUI Display ==========================================================
+# ==== TUI Display
 
 try:
     from rich.console import Console as RichConsole
@@ -1620,7 +1620,7 @@ def print_status(repo_dir: str):
         _log(f"{name:<20} {r['status']:<10} {r['duration']:>7.1f}s  {r['retries']:>7}")
     _log("-" * 60)
 
-# ==== Plan Generation ======================================================
+# ==== Plan Generation
 
 _PLAN_PROMPT_EN = """\
 You are a workflow planner for dage, a DAG-based workflow orchestrator.
@@ -1860,7 +1860,7 @@ def _extract_yaml(text: str) -> str:
     return text
 
 
-# ==== CLI ==================================================================
+# ==== CLI
 
 def main():
     parser = argparse.ArgumentParser(
