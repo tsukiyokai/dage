@@ -1742,10 +1742,11 @@ _PLAN_PROMPT = _p(_PLAN_PROMPT_EN, _PLAN_PROMPT_ZH)
 
 
 _BRAINSTORM_PROMPT_EN = """\
-You are a workflow architect. Analyze the task and design a DAG execution plan.
+You are a workflow architect. An execution plan is provided below (already brainstormed
+and structured). Design a DAG execution plan from it.
 Think step by step, making all decisions autonomously.
 
-1. DECOMPOSE: Break the task into concrete subtasks.
+1. DECOMPOSE: Break the execution plan into concrete subtasks suitable for DAG execution.
 2. CLASSIFY each subtask:
    - claude (AI reasoning/analysis/coding) or shell (deterministic command)?
    - role: context (gather info), produce (create artifacts), gate (verify), meta (report)?
@@ -1766,10 +1767,10 @@ what it reads as input, and what it produces as output.
 Task: """
 
 _BRAINSTORM_PROMPT_ZH = """\
-你是工作流架构师。分析任务并设计DAG执行计划。
-逐步思考，所有决策自主完成。
+你是工作流架构师。下面提供了一份执行计划（已经过头脑风暴和结构化）。
+基于它设计DAG执行计划。逐步思考，所有决策自主完成。
 
-1. 分解: 将任务拆分为具体的子任务。
+1. 分解: 将执行计划拆分为适合DAG执行的具体子任务。
 2. 分类每个子任务:
    - claude（AI推理/分析/编码）还是shell（确定性命令）？
    - 角色: context（收集信息）、produce（创建产物）、gate（验证）、meta（报告）？
@@ -1791,12 +1792,12 @@ _BRAINSTORM_PROMPT_ZH = """\
 _BRAINSTORM_PROMPT = _p(_BRAINSTORM_PROMPT_EN, _BRAINSTORM_PROMPT_ZH)
 
 
-def _call_claude(prompt: str, timeout: int = 120) -> str:
+def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
+    cmd = ["claude", "-p", prompt, "--output-format", "text"]
+    if system:
+        cmd += ["--append-system-prompt", system]
     try:
-        proc = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=timeout,
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         raise RuntimeError("'claude' CLI not found — install Claude Code first")
     except subprocess.TimeoutExpired:
@@ -1807,14 +1808,41 @@ def _call_claude(prompt: str, timeout: int = 120) -> str:
 
 
 def generate_plan(description: str) -> tuple[str, str]:
-    """Two-phase plan generation: brainstorm design, then generate YAML."""
-    _log("  phase 1: brainstorming...")
-    design = _call_claude(_BRAINSTORM_PROMPT + description, timeout=180)
+    """Four-phase plan generation: brainstorm → writing-plan → DAG design → YAML."""
+    bs_skill = _load_skills(["brainstorming"])
+    wp_skill = _load_skills(["writing-plans"])
+
+    # phase 1: brainstorm — mature the raw idea
+    if bs_skill:
+        _log("  phase 1/4: brainstorming idea...")
+        mature = _call_claude(description, timeout=180, system=bs_skill)
+        _log(f"  brainstorm: {len(mature)} chars")
+    else:
+        _log("  phase 1/4: brainstorming skill not found, skipping")
+        mature = description
+
+    # phase 2: writing-plans — turn mature idea into executable plan
+    if wp_skill:
+        _log("  phase 2/4: writing execution plan...")
+        plan = _call_claude(
+            f"{mature}\n\nOriginal task:\n{description}",
+            timeout=240, system=wp_skill)
+        _log(f"  plan: {len(plan)} chars")
+    else:
+        _log("  phase 2/4: writing-plans skill not found, skipping")
+        plan = mature
+
+    # phase 3: DAG design — decompose plan into subtasks with deps/gates
+    _log("  phase 3/4: designing DAG...")
+    design = _call_claude(
+        _BRAINSTORM_PROMPT + f"\n\nExecution plan:\n{plan}",
+        timeout=180)
     _log(f"  design: {len(design)} chars")
 
-    _log("  phase 2: generating YAML...")
+    # phase 4: YAML generation
+    _log("  phase 4/4: generating YAML...")
     gen_prompt = _PLAN_PROMPT + (
-        f"\nDesign document (from brainstorming phase):\n{design}\n\n"
+        f"\nDesign document:\n{design}\n\n"
         f"Original task: {description}"
     )
     raw = _call_claude(gen_prompt, timeout=300)
@@ -1858,7 +1886,7 @@ def main():
 
     # plan
     p_plan = sub.add_parser("plan", help="AI-generate workflow from description")
-    p_plan.add_argument("description", help="task description in natural language")
+    p_plan.add_argument("description", help="task description or path to idea file")
     p_plan.add_argument("-o", "--output", default="workflow.yaml",
                         help="output file (default: workflow.yaml)")
 
@@ -1903,9 +1931,13 @@ def main():
         print_status(os.path.abspath(args.repo_dir))
 
     elif args.command == "plan":
+        desc = args.description
+        if os.path.isfile(desc):
+            desc = Path(desc).read_text().strip()
+            _log(f"loaded idea from: {args.description}")
         _log("generating workflow...")
         try:
-            raw, design = generate_plan(args.description)
+            raw, design = generate_plan(desc)
         except RuntimeError as e:
             _log(f"error: {e}")
             sys.exit(1)
@@ -1915,7 +1947,7 @@ def main():
         design_file = os.path.join(plan_dir,
             f"{time.strftime('%Y%m%d-%H%M%S')}-design.md")
         with open(design_file, "w") as f:
-            f.write(f"# Design: {args.description}\n\n{design}\n")
+            f.write(f"# Design: {desc[:80]}\n\n{design}\n")
         _log(f"  design: {design_file}")
 
         try:
