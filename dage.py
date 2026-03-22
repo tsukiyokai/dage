@@ -599,6 +599,35 @@ def _merge_worktrees(auto_wt: dict[str, str], repo_dir: str, run_id: str):
     for node_name, wt_name in auto_wt.items():
         _merge_single_worktree(node_name, wt_name, repo_dir)
 
+def _prune_worktrees(repo_dir: str):
+    """Remove worktrees whose branches have been merged. Called at workflow end."""
+    wt_base = os.path.join(repo_dir, ".dage", "worktrees")
+    if not os.path.isdir(wt_base):
+        return
+    pruned = []
+    for name in os.listdir(wt_base):
+        wt_path = os.path.join(wt_base, name)
+        if not os.path.isdir(wt_path):
+            continue
+        # check if branch has unmerged changes
+        rc, _, _ = _run_streamed(
+            f"_check_{name}",
+            f'cd "{wt_path}" && git diff --quiet HEAD main 2>/dev/null',
+            shell=True)
+        if rc != 0:
+            continue  # unmerged changes — keep
+        # remove worktree + delete branch
+        try:
+            _run_streamed(f"_prune_{name}",
+                         f'cd "{repo_dir}" && git worktree remove "{wt_path}" --force 2>/dev/null; '
+                         f'git branch -D "{name}" 2>/dev/null; true',
+                         shell=True)
+            pruned.append(name)
+        except Exception:
+            pass
+    if pruned:
+        _log(f"  pruned worktrees: {pruned}")
+
 # ==== Gate Auto-commit =====================================================
 
 def _auto_commit(gate_name: str, nodes: dict[str, Node],
@@ -1275,6 +1304,7 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
             _display = None
 
     save_state(run_dir, results)
+    _prune_worktrees(repo_dir)
     _log("")
     print_summary(results)
 
