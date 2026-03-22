@@ -1574,18 +1574,52 @@ Output a structured DAG design. For each node: name, type, role, deps, prompt/cm
 Work streams: """
 
 def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
-    cmd = ["claude", "-p", prompt, "--output-format", "text"]
+    cmd = ["claude", "-p", prompt, "--output-format", "stream-json"]
     if system:
         cmd += ["--append-system-prompt", system]
+    env = os.environ.copy()
+    env["CCX_MANAGED"] = "1"
     try:
-        rc, stdout, stderr = _run_streamed("_plan", cmd, timeout=timeout)
+        proc = subprocess.Popen(
+            cmd, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
     except FileNotFoundError:
         raise RuntimeError("'claude' CLI not found — install Claude Code first")
+    with _active_procs_lock:
+        _active_procs.append(proc)
+    text_parts: list[str] = []
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") == "assistant" and "content" in msg:
+                for block in msg["content"]:
+                    if block.get("type") == "text":
+                        text_parts.append(block["text"])
+                        # log last line of text
+                        last = block["text"].rstrip().split("\n")[-1]
+                        if last:
+                            _log_line("_plan", last)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.kill()
         raise RuntimeError(f"claude timed out ({timeout}s)")
-    if rc != 0:
+    finally:
+        with _active_procs_lock:
+            try:
+                _active_procs.remove(proc)
+            except ValueError:
+                pass
+    if proc.returncode != 0:
+        stderr = proc.stderr.read() if proc.stderr else ""
         raise RuntimeError(f"claude failed: {stderr.strip()}")
-    return stdout.strip()
+    return "".join(text_parts).strip()
 
 _MATURE_PROMPT = """You are a product design thinker. Turn a raw idea into a fully formed design spec.
 Make ALL decisions autonomously — do not ask questions, do not wait for input.
