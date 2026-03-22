@@ -10,11 +10,13 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from dataclasses import dataclass, field
 from enum import Enum
 from graphlib import TopologicalSorter, CycleError
@@ -68,10 +70,16 @@ class NodeResult:
     output:   str     = ""
     duration: float   = 0.0
     retries:  int     = 0
+    cost:     float   = 0.0
 
     def to_dict(self) -> dict:
-        return {"status": self.status.value, "output_len": len(self.output),
-                "duration": round(self.duration, 1), "retries": self.retries}
+        d = {"status": self.status.value, "output_len": len(self.output),
+             "duration": round(self.duration, 1), "retries": self.retries}
+        if self.output:
+            d["output"] = self.output
+        if self.cost > 0:
+            d["cost"] = round(self.cost, 4)
+        return d
 
 # ==== YAML Loading =========================================================
 
@@ -135,6 +143,8 @@ def validate_workflow(nodes: dict[str, Node]) -> list[str]:
 
 # ==== Variable Interpolation ===============================================
 
+_max_output: int = 0  # workflow-level cap for ${nodes.X.output}, 0 = unlimited
+
 def _resolve_path(ctx: dict, path: str) -> str:
     """Resolve dotted path like 'nodes.harvest.output' against context dict."""
     cur: Any = ctx
@@ -144,7 +154,12 @@ def _resolve_path(ctx: dict, path: str) -> str:
                 return f"<unresolved:{path}>"
             cur = cur[part]
         elif isinstance(cur, NodeResult):
-            if   part == "output": cur = cur.output
+            if   part == "output":
+                text = cur.output
+                if _max_output and len(text) > _max_output:
+                    text = text[:_max_output] + \
+                        f"\n[truncated: {len(cur.output)} chars total]"
+                cur = text
             elif part == "status": cur = cur.status.value
             else: return f"<unresolved:{path}>"
         else:
@@ -209,15 +224,31 @@ def find_blocked(nodes: dict[str, Node], failed_gate: str) -> set[str]:
         for dep in node.deps:
             children[dep].append(name)
     blocked: set[str] = set()
-    queue = list(children[failed_gate])
+    queue = deque(children[failed_gate])
     while queue:
-        n = queue.pop(0)
+        n = queue.popleft()
         if n not in blocked:
             blocked.add(n)
             queue.extend(children[n])
     return blocked
 
 # ==== Executors ============================================================
+
+_active_procs: list[subprocess.Popen] = []
+_active_procs_lock = threading.Lock()
+
+def _kill_active_procs():
+    """Terminate all tracked child processes."""
+    with _active_procs_lock:
+        for proc in _active_procs:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+
+def _sigterm_handler(signum, frame):
+    _kill_active_procs()
+    raise KeyboardInterrupt
 
 _ANSI_COLORS = [36, 32, 33, 35, 34, 91, 96, 92, 93, 95]  # cyan,green,yellow,magenta,blue,...
 _ANSI_RESET  = "\033[0m"
@@ -244,6 +275,8 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
         cmd, shell=shell, cwd=cwd, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
+    with _active_procs_lock:
+        _active_procs.append(proc)
     stdout_buf: list[str] = []
     stderr_buf: list[str] = []
 
@@ -264,6 +297,12 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
         t1.join(timeout=5)
         t2.join(timeout=5)
         raise
+    finally:
+        with _active_procs_lock:
+            try:
+                _active_procs.remove(proc)
+            except ValueError:
+                pass
 
     t1.join()
     t2.join()
@@ -393,7 +432,14 @@ def should_skip(node: Node, ctx: dict) -> bool:
         return left != right
     return not rendered.strip()
 
-_ANNOTATE_PROMPT = """\
+# ==== Prompt Templates (en + zh) ===========================================
+
+_LANG = "zh"  # default language for prompts, overridable via wf["lang"]
+
+def _p(en: str, zh: str) -> str:
+    return zh if _LANG == "zh" else en
+
+_ANNOTATE_PROMPT_EN = """\
 Review design docs against the actual implementation. Think deeply about whether
 each difference is a real problem or an intentional design evolution.
 
@@ -418,6 +464,33 @@ Rules:
 - Every fix MUST have a dage-note comment above it recording the change
 - If no real discrepancies, do nothing
 """
+
+_ANNOTATE_PROMPT_ZH = """\
+对照实际实现审查设计文档。深入思考每处差异究竟是真正的问题，还是实现过程中的合理演进。
+
+设计文档: {design_docs}
+
+刚完成并验证的实现内容:
+{impl_summary}
+
+对每处确认的偏差:
+1. 修正设计文档文本使其匹配实际实现（更新数值、约束、描述）
+2. 在修正处上方插入HTML注释，记录变更内容和原因:
+
+<!-- dage-note: {date}
+CHANGED: [原文本] -> [新文本]
+REASON: [实现为何偏离设计，实现过程中发现了什么]
+-->
+
+规则:
+- 先思考再动手: 这是真正的错误，还是文档中有意的简化？
+- 修正真实问题: 错误的数值、过时的假设、缺失的约束、不正确的公式
+- 跳过: 风格差异、措辞偏好、详略程度的选择
+- 每处修正必须在其上方附带dage-note注释记录变更
+- 如果没有真实偏差，什么都不做
+"""
+
+_ANNOTATE_PROMPT = _p(_ANNOTATE_PROMPT_EN, _ANNOTATE_PROMPT_ZH)
 
 def _annotate_design_docs(wf: dict, nodes: dict[str, Node],
                           results: dict[str, NodeResult],
@@ -451,9 +524,7 @@ def _annotate_design_docs(wf: dict, nodes: dict[str, Node],
 _META_STYLE = """
 
 写作风格: 傲娇猫娘+雌小鬼。连贯段落，不要标题或列表。
-语气特征: 句尾偶尔带猫叫口癖但不过度、对上游设计挑刺吐槽、
-对自己成果嘴硬炫耀、遇到困难傲娇不肯承认、偶尔用♡调皮。
-技术内容必须准确，语气不牺牲信息量。
+语气特征: 句尾偶尔带猫叫口癖但不过度、对上游设计挑刺吐槽、对自己成果嘴硬炫耀、遇到困难傲娇不肯承认、偶尔用♡调皮。技术内容必须准确，语气不牺牲信息量。
 """
 
 def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
@@ -485,34 +556,48 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
 # ==== Worktree Merge =======================================================
 
+def _merge_single_worktree(node_name: str, wt_name: str,
+                           repo_dir: str) -> bool:
+    """Merge one worktree branch back to main. Returns True on success."""
+    wt_base = os.path.join(repo_dir, ".dage", "worktrees")
+    wt_path = os.path.realpath(os.path.join(wt_base, wt_name))
+    if not os.path.isdir(wt_path):
+        return True
+    try:
+        # commit worktree changes on its branch
+        _run_streamed(
+            f"_commit_{node_name}",
+            f'cd "{wt_path}" && git add -A && '
+            f'git diff --cached --quiet || git commit -m "dage: {node_name}"',
+            shell=True)
+        # attempt merge
+        rc, out, err = _run_streamed(
+            f"_merge_{node_name}",
+            f'cd "{repo_dir}" && git merge --no-edit "{wt_name}"',
+            shell=True)
+        if rc != 0:
+            # conflict — abort merge, preserve worktree for manual resolution
+            _run_streamed(f"_abort_{node_name}",
+                         f'cd "{repo_dir}" && git merge --abort 2>/dev/null; true',
+                         shell=True)
+            _log(f"  CONFLICT merging {node_name} — resolve in: {wt_path}")
+            return False
+        _log(f"  merge: {node_name} -> main")
+        # reset worktree to main HEAD for reuse next run
+        _run_streamed(
+            f"_reset_{node_name}",
+            f'cd "{wt_path}" && git checkout -B "{wt_name}" HEAD 2>/dev/null; '
+            f'git reset --hard main 2>/dev/null; true',
+            shell=True)
+        return True
+    except Exception as e:
+        _log(f"  merge failed ({node_name}): {e}")
+        return False
+
 def _merge_worktrees(auto_wt: dict[str, str], repo_dir: str, run_id: str):
-    """Merge worktree branches back to main via git merge (handles same-file edits)."""
+    """Merge worktree branches back to main via git merge."""
     for node_name, wt_name in auto_wt.items():
-        wt_base = os.path.join(repo_dir, ".dage", "worktrees")
-        wt_path = os.path.realpath(os.path.join(wt_base, wt_name))
-        if not os.path.isdir(wt_path):
-            continue
-        try:
-            # commit worktree changes on its branch
-            _run_streamed(
-                f"_commit_{node_name}",
-                f'cd "{wt_path}" && git add -A && '
-                f'git diff --cached --quiet || git commit -m "dage: {node_name}"',
-                shell=True)
-            # merge branch into main
-            _run_streamed(
-                f"_merge_{node_name}",
-                f'cd "{repo_dir}" && git merge --no-edit "{wt_name}"',
-                shell=True)
-            _log(f"  merge: {node_name} -> main")
-            # reset worktree to main HEAD for reuse next run
-            _run_streamed(
-                f"_reset_{node_name}",
-                f'cd "{wt_path}" && git checkout -B "{wt_name}" HEAD 2>/dev/null; '
-                f'git reset --hard main 2>/dev/null; true',
-                shell=True)
-        except Exception as e:
-            _log(f"  merge failed ({node_name}): {e}")
+        _merge_single_worktree(node_name, wt_name, repo_dir)
 
 # ==== Gate Auto-commit =====================================================
 
@@ -537,7 +622,7 @@ def _auto_commit(gate_name: str, nodes: dict[str, Node],
             return
 
         _run_streamed(f"_commit_{gate_name}",
-                      f'git add -A && git commit -m "{msg}"',
+                      f'git add -A -- . ":!.dage" && git commit -m "{msg}"',
                       shell=True, cwd=repo_dir)
         _log(f"[commit] {msg}")
 
@@ -550,7 +635,7 @@ def _auto_commit(gate_name: str, nodes: dict[str, Node],
 
 # ==== Gate Autofix =========================================================
 
-_AUTOFIX_PROMPT = """\
+_AUTOFIX_PROMPT_EN = """\
 A build/test gate failed. Diagnose and fix the issue.
 
 Gate command:
@@ -564,6 +649,23 @@ Instructions:
 2. Fix it (install tools, fix code, etc.)
 3. Run the gate command yourself to verify
 """
+
+_AUTOFIX_PROMPT_ZH = """\
+构建/测试gate失败了。诊断并修复问题。
+
+Gate命令:
+{cmd}
+
+错误输出:
+{error_output}
+{upstream_context}
+步骤:
+1. 仔细阅读错误信息，定位根因
+2. 修复问题（安装工具、修改代码等）
+3. 自行运行gate命令验证修复结果
+"""
+
+_AUTOFIX_PROMPT = _p(_AUTOFIX_PROMPT_EN, _AUTOFIX_PROMPT_ZH)
 
 def _autofix_gate(gate: Node, gate_result: NodeResult,
                   nodes: dict[str, Node], ctx: dict,
@@ -618,7 +720,7 @@ def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
             return name, m.group(1).strip()
     return None
 
-_DAGE_KNOWLEDGE = """\
+_DAGE_KNOWLEDGE_EN = """\
 How dage works:
 - Each `claude` node spawns a ccx session — an iterative Claude Code development loop.
   ccx runs Claude Code in multiple iterations (controlled by max_runs).
@@ -657,7 +759,48 @@ Node schema:
     max_runs: 0                   # ccx iterations (0=unlimited, completion-signal-driven)
 """
 
-_REPLAN_PROMPT = """\
+_DAGE_KNOWLEDGE_ZH = """\
+dage工作原理:
+- 每个`claude`节点启动一个ccx会话——迭代式Claude Code开发循环。
+  ccx以多次迭代运行Claude Code（由max_runs控制）。
+  第1次迭代: agent规划任务并创建notes文件。
+  第2次及之后: agent基于计划执行，读取之前的notes作为上下文。
+  ccx自动处理: notes文件读写、完成信号、迭代上下文。
+  最终notes文件内容成为下游节点可用的${{nodes.NAME.output}}。
+- 每个`shell`节点运行一条命令。用途: git、测试、构建、lint、基准测试。
+- 同一层的节点（无相互依赖）自动并行执行。
+- `gate`节点失败会跳过其所有下游节点（短路）。
+
+ccx prompt编写指南:
+- prompt是你的目标，不是脚本。ccx会自动包装工作流上下文。
+- 聚焦于: 要达成什么 + 上游上下文。不要写"写入notes"（ccx会处理）。
+- 通过${{nodes.NAME.output}}注入上游上下文——即上游节点的notes文件内容。
+- max_runs = ccx迭代次数（每次是一个完整的Claude Code会话）:
+    0     无限制: 由完成信号停止（默认，推荐）
+    1-3   简单任务的上限
+    5-10  中等任务的上限
+    10+   复杂任务的上限（有完成信号通常不必要）
+- 简单信息收集: 用`type: shell`加命令，而非ccx。
+- 实现节点之后，始终添加shell gate节点（cargo test、pytest、make）。
+
+节点schema:
+  <name>:
+    type: shell | claude
+    role: produce|context|gate|evaluate|gc|meta
+    deps: [a, b]
+    cmd: "..."                    # shell必填
+    prompt: |                     # claude必填
+      目标: ...
+      上游上下文: ${{nodes.upstream.output}}
+      具体任务: 1. ... 2. ...
+    retry: N
+    timeout: "30m"                # 例如 1h, 5m, 30s
+    max_runs: 0                   # ccx迭代次数（0=无限制，完成信号驱动）
+"""
+
+_DAGE_KNOWLEDGE = _p(_DAGE_KNOWLEDGE_EN, _DAGE_KNOWLEDGE_ZH)
+
+_REPLAN_PROMPT_EN = """\
 You are a workflow replanner. A running DAG needs adjustment.
 
 {dage_knowledge}
@@ -698,6 +841,50 @@ Output ONLY valid YAML (no fences, no commentary):
         Context: ...
       max_runs: 0      # ccx iterations (0=unlimited, default)
 """
+
+_REPLAN_PROMPT_ZH = """\
+你是工作流重规划器。一个运行中的DAG需要调整。
+
+{dage_knowledge}
+
+原始任务: {task}
+
+已完成节点（不可修改）:
+{completed}
+
+触发节点'{trigger}'发出信号: {reason}
+触发节点输出（最后2000字符）:
+{output}
+
+待执行节点（可移除）:
+{pending}
+
+第{replan_seq}次重规划，最多{max_replans}次。最小化变更。
+
+规则:
+- 可以添加新节点（可依赖已完成或新节点）
+- 可以移除不再需要的待执行节点
+- 不能修改已完成节点。不允许循环依赖。
+- claude节点: prompt是目标（ccx自动处理notes和迭代上下文）
+- shell节点: cmd必须是有效的shell命令
+- 必须提供justification说明这些变更如何服务于原始任务
+
+仅输出有效YAML（无代码围栏，无额外说明）:
+  justification: "一句话: 此次重规划如何服务于原始任务"
+  remove: [name, ...]
+  add:
+    name:
+      type: shell | claude
+      role: produce | context | gate
+      deps: [...]
+      cmd: "..."       # shell用
+      prompt: |        # claude用
+        目标: ...
+        上下文: ...
+      max_runs: 0      # ccx迭代次数（0=无限制，默认）
+"""
+
+_REPLAN_PROMPT = _p(_REPLAN_PROMPT_EN, _REPLAN_PROMPT_ZH)
 
 def call_replanner(wf: dict, nodes: dict[str, Node],
                    results: dict[str, NodeResult],
@@ -854,6 +1041,88 @@ def _hot_reload(yaml_path: str, nodes: dict[str, Node],
 
 # ==== DAG Runner ===========================================================
 
+def _reload_config(wf: dict) -> dict:
+    """Extract mutable config from workflow dict."""
+    replan_cfg = wf.get("replan", {})
+    commit_cfg = wf.get("auto_commit", {})
+    return {
+        "replan_mode":  replan_cfg.get("mode", "auto"),
+        "max_replans":  replan_cfg.get("max_replans", 3),
+        "max_nodes":    replan_cfg.get("max_nodes", 50),
+        "do_commit":    bool(commit_cfg) if isinstance(commit_cfg, dict) else bool(commit_cfg),
+        "do_push":      commit_cfg.get("push", False) if isinstance(commit_cfg, dict) else False,
+        "autofix":      wf.get("autofix", True),
+    }
+
+def _handle_gate_fail(name: str, nodes: dict[str, Node], results: dict[str, NodeResult],
+                      blocked: set[str], autofixed: set[str], cfg: dict,
+                      ctx: dict, wf: dict, run_dir: str, run_id: str,
+                      repo_dir: str):
+    """Handle a failed gate: autofix attempt, then block downstream."""
+    if cfg["autofix"] and name not in autofixed:
+        autofixed.add(name)
+        fix_result = _autofix_gate(
+            nodes[name], results[name], nodes, ctx,
+            wf, run_dir, run_id, repo_dir)
+        if fix_result and fix_result.status == Status.SUCCESS:
+            results[name] = fix_result
+            _log(f"[{name}] gate passed after autofix")
+            return
+    downstream = find_blocked(nodes, name)
+    blocked |= downstream
+    _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
+    for b in downstream:
+        if results.get(b, NodeResult()).status == Status.PENDING:
+            results[b] = NodeResult(status=Status.SKIPPED,
+                                    output="blocked by failed gate")
+            _log(f"[{b}] SKIPPED (gate)")
+
+def _handle_replan(name: str, nodes: dict[str, Node], results: dict[str, NodeResult],
+                   blocked: set[str], wf: dict, run_dir: str,
+                   cfg: dict, replan_count: int) -> int:
+    """Check and handle replan signal from a single node. Returns updated replan_count."""
+    node = nodes[name]
+    if not node.adaptive or results[name].status != Status.SUCCESS:
+        return replan_count
+    if replan_count >= cfg["max_replans"] or len(nodes) >= cfg["max_nodes"]:
+        return replan_count
+    m = re.search(r'\[REPLAN:\s*(.+?)\]', results[name].output)
+    if not m:
+        return replan_count
+
+    reason = m.group(1).strip()
+    seq = replan_count + 1
+    _log(f"[replan {seq}/{cfg['max_replans']}] "
+         f"triggered by '{name}': {reason}")
+
+    if cfg["replan_mode"] == "log":
+        _log(f"[replan] mode=log, signal recorded but not acted on")
+        _save_json(os.path.join(run_dir, f"replan-{seq}-signal.json"),
+                   {"seq": seq, "trigger": name, "reason": reason, "mode": "log"})
+        return replan_count + 1
+
+    replan_result = call_replanner(wf, nodes, results, name, reason, seq, run_dir)
+    if not replan_result:
+        return replan_count
+
+    justification = replan_result.get("justification", "")
+    if not justification:
+        _log("[replan] rejected: no justification provided")
+        return replan_count + 1
+
+    _log(f"[replan] proposal:\n{_format_replan_proposal(replan_result)}")
+
+    if cfg["replan_mode"] == "confirm" and not _confirm_replan():
+        _log("[replan] rejected by user")
+        return replan_count + 1
+
+    event = apply_replan(nodes, results, blocked, replan_result,
+                         wf.get("defaults", {}), run_dir, seq)
+    if _display:
+        _display.replan_count = replan_count + 1
+    _log(f"[replan] +{len(event['added'])} -{len(event['removed'])} nodes")
+    return replan_count + 1
+
 def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
             dry_run: bool = False, from_node: str | None = None) -> dict[str, NodeResult]:
     """Execute the full DAG with dynamic scheduling and adaptive replanning."""
@@ -863,11 +1132,15 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
 
     results: dict[str, NodeResult] = {name: NodeResult() for name in nodes}
     blocked: set[str] = set()
-    autofixed: set[str] = set()           # 每个gate最多autofix一次
-    autofix   = wf.get("autofix", True)   # 顶层开关，默认启用
-    commit_cfg = wf.get("auto_commit", {})
-    do_commit  = bool(commit_cfg) if isinstance(commit_cfg, dict) else bool(commit_cfg)
-    do_push    = commit_cfg.get("push", False) if isinstance(commit_cfg, dict) else False
+    autofixed: set[str] = set()
+    cfg = _reload_config(wf)
+
+    # workflow-level output truncation
+    global _max_output
+    _max_output = wf.get("max_output", 0)
+
+    # concurrency cap
+    max_concurrent = wf.get("max_concurrent", 0) or None
 
     if from_node:
         results, blocked = _load_resume_state(nodes, from_node, repo_dir)
@@ -875,10 +1148,6 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
         if resumed:
             _log(f"resumed: {sorted(resumed)}")
 
-    replan_cfg   = wf.get("replan", {})
-    replan_mode  = replan_cfg.get("mode", "auto")
-    max_replans  = replan_cfg.get("max_replans", 3)
-    max_nodes    = replan_cfg.get("max_nodes", 50)
     replan_count = 0
 
     _save_json(os.path.join(run_dir, "original-nodes.json"),
@@ -887,7 +1156,11 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     yaml_path = wf.get("_yaml_path")
     yaml_mtime = os.path.getmtime(yaml_path) if yaml_path else 0
 
-    _log(f"run {run_id}  nodes={len(nodes)}")
+    opts = []
+    if max_concurrent: opts.append(f"workers={max_concurrent}")
+    if _max_output:    opts.append(f"max_output={_max_output}")
+    opts_str = f"  ({', '.join(opts)})" if opts else ""
+    _log(f"run {run_id}  nodes={len(nodes)}{opts_str}")
     if dry_run:
         _log("[dry-run mode]")
     _log("")
@@ -898,23 +1171,19 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
         _display = DageDisplay(wf, nodes, results, start_time)
         _display.start()
 
+    prev_sigterm = signal.signal(signal.SIGTERM, _sigterm_handler)
+
     try:
-        with ThreadPoolExecutor() as pool:
+        with ThreadPoolExecutor(max_workers=max_concurrent) as pool:
             while True:
-                # hot-reload: detect YAML changes between layers
+                # hot-reload: detect YAML changes between rounds
                 if yaml_path:
                     new_mtime = os.path.getmtime(yaml_path)
                     if new_mtime != yaml_mtime:
                         yaml_mtime = new_mtime
                         if _hot_reload(yaml_path, nodes, results, blocked, wf):
-                            replan_cfg  = wf.get("replan", {})
-                            replan_mode = replan_cfg.get("mode", "auto")
-                            max_replans = replan_cfg.get("max_replans", 3)
-                            max_nodes   = replan_cfg.get("max_nodes", 50)
-                            commit_cfg  = wf.get("auto_commit", {})
-                            do_commit   = bool(commit_cfg) if isinstance(commit_cfg, dict) else bool(commit_cfg)
-                            do_push     = commit_cfg.get("push", False) if isinstance(commit_cfg, dict) else False
-                            autofix     = wf.get("autofix", True)
+                            cfg = _reload_config(wf)
+                            _max_output = wf.get("max_output", 0)
 
                 layer = next_runnable(nodes, results, blocked)
                 if not layer:
@@ -946,106 +1215,61 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                 if auto_wt:
                     _log(f"  auto-worktree: {sorted(auto_wt)}")
 
-                # phase 2: parallel execution
+                # phase 2: parallel execution with inline gate handling
                 for n in to_run:
                     results[n] = NodeResult(status=Status.RUNNING)
                     if _display:
                         _display.node_start[n] = time.monotonic()
-                futures = {
+                in_flight = {
                     pool.submit(execute_node, nodes[n], ctx, run_dir,
                                 run_id, repo_dir, dry_run,
                                 worktree=auto_wt.get(n, "")): n
                     for n in to_run
                 }
-                for fut in as_completed(futures):
-                    name = futures[fut]
-                    results[name] = fut.result()
-                    r = results[name]
-                    icon = "ok" if r.status == Status.SUCCESS else "FAIL"
-                    _log(f"[{name}] {icon}  {r.duration:.1f}s"
-                         + (f"  retries={r.retries}" if r.retries else ""))
+                gates_passed = []
+
+                while in_flight:
+                    done, _ = wait(in_flight.keys(),
+                                   return_when=FIRST_COMPLETED)
+                    for fut in done:
+                        name = in_flight.pop(fut)
+                        results[name] = fut.result()
+                        r = results[name]
+                        icon = "ok" if r.status == Status.SUCCESS else "FAIL"
+                        _log(f"[{name}] {icon}  {r.duration:.1f}s"
+                             + (f"  retries={r.retries}" if r.retries else ""))
+
+                        # inline gate failure: block downstream immediately
+                        node = nodes[name]
+                        if node.role == Role.GATE and r.status == Status.FAILED:
+                            _handle_gate_fail(name, nodes, results, blocked,
+                                              autofixed, cfg, ctx, wf,
+                                              run_dir, run_id, repo_dir)
+                        elif node.role == Role.GATE and r.status == Status.SUCCESS:
+                            gates_passed.append(name)
+
+                        # inline replan
+                        replan_count = _handle_replan(
+                            name, nodes, results, blocked,
+                            wf, run_dir, cfg, replan_count)
 
                 # phase 2.5: merge worktree changes back to main
                 if auto_wt:
                     _merge_worktrees(auto_wt, repo_dir, run_id)
 
-                # phase 3: gate propagation (with autofix + auto-commit)
-                for name in to_run:
-                    if nodes[name].role == Role.GATE and results[name].status == Status.SUCCESS:
-                        if do_commit:
-                            _auto_commit(name, nodes, repo_dir, push=do_push)
-                        if wf.get("design_docs"):
-                            _annotate_design_docs(wf, nodes, results, name,
-                                                  run_dir, run_id, repo_dir)
-                    elif nodes[name].role == Role.GATE and results[name].status == Status.FAILED:
-                        # autofix: spawn claude to diagnose & fix, then retry gate
-                        if autofix and name not in autofixed:
-                            autofixed.add(name)
-                            fix_result = _autofix_gate(
-                                nodes[name], results[name], nodes, ctx,
-                                wf, run_dir, run_id, repo_dir)
-                            if fix_result and fix_result.status == Status.SUCCESS:
-                                results[name] = fix_result
-                                _log(f"[{name}] gate passed after autofix")
-                                continue
-
-                        downstream = find_blocked(nodes, name)
-                        blocked |= downstream
-                        _log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
-                        for b in downstream:
-                            if results.get(b, NodeResult()).status == Status.PENDING:
-                                results[b] = NodeResult(status=Status.SKIPPED,
-                                                        output="blocked by failed gate")
-                                _log(f"[{b}] SKIPPED (gate)")
-
-                # phase 4: adaptive replan
-                if replan_count < max_replans and len(nodes) < max_nodes:
-                    signal = detect_replan(nodes, results, to_run)
-                    if signal:
-                        trigger, reason = signal
-                        seq = replan_count + 1
-                        _log(f"[replan {seq}/{max_replans}] "
-                             f"triggered by '{trigger}': {reason}")
-
-                        if replan_mode == "log":
-                            _log(f"[replan] mode=log, signal recorded but not acted on")
-                            _save_json(os.path.join(run_dir, f"replan-{seq}-signal.json"),
-                                       {"seq": seq, "trigger": trigger, "reason": reason,
-                                        "mode": "log"})
-                            replan_count += 1
-                            continue
-
-                        replan_result = call_replanner(
-                            wf, nodes, results, trigger, reason, seq, run_dir)
-
-                        if not replan_result:
-                            continue
-
-                        justification = replan_result.get("justification", "")
-                        if not justification:
-                            _log("[replan] rejected: no justification provided")
-                            replan_count += 1
-                            continue
-
-                        _log(f"[replan] proposal:\n{_format_replan_proposal(replan_result)}")
-
-                        if replan_mode == "confirm" and not _confirm_replan():
-                            _log("[replan] rejected by user")
-                            replan_count += 1
-                            continue
-
-                        event = apply_replan(
-                            nodes, results, blocked, replan_result,
-                            wf.get("defaults", {}), run_dir, seq)
-                        replan_count += 1
-                        if _display:
-                            _display.replan_count = replan_count
-                        _log(f"[replan] +{len(event['added'])} "
-                             f"-{len(event['removed'])} nodes")
+                # phase 3: gate success actions (after worktree merge for safe ordering)
+                for name in gates_passed:
+                    if cfg["do_commit"]:
+                        _auto_commit(name, nodes, repo_dir, push=cfg["do_push"])
+                    if wf.get("design_docs"):
+                        _annotate_design_docs(wf, nodes, results, name,
+                                              run_dir, run_id, repo_dir)
 
     except KeyboardInterrupt:
-        _log("\n[interrupted] saving progress...")
+        _log("\n[interrupted] killing child processes...")
+        _kill_active_procs()
     finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
         if _display:
             _display.stop()
             _display = None
@@ -1092,7 +1316,7 @@ def _load_resume_state(nodes: dict[str, Node], from_node: str,
                 s = saved[name]
                 results[name] = NodeResult(
                     status   = Status(s["status"]),
-                    output   = "",
+                    output   = s.get("output", ""),
                     duration = s.get("duration", 0),
                 )
         if reached:
@@ -1368,11 +1592,11 @@ def print_status(repo_dir: str):
 
 # ==== Plan Generation ======================================================
 
-_PLAN_PROMPT = """\
+_PLAN_PROMPT_EN = """\
 You are a workflow planner for dage, a DAG-based workflow orchestrator.
 Turn the task description into a valid dage YAML workflow.
 
-""" + _DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}") + """
+""" + _DAGE_KNOWLEDGE_EN.replace("{{", "{").replace("}}", "}") + """
 Additional schema fields (plan-only):
   condition: "expr"             # skip if false
   adaptive: true                # enable replan signal detection (default: false)
@@ -1426,8 +1650,68 @@ Output ONLY valid YAML. No fences, no commentary.
 
 Task: """
 
+_PLAN_PROMPT_ZH = """\
+你是dage的工作流规划器，dage是一个基于DAG的工作流编排器。
+将任务描述转化为有效的dage YAML工作流。
 
-_BRAINSTORM_PROMPT = """\
+""" + _DAGE_KNOWLEDGE_ZH.replace("{{", "{").replace("}}", "}") + """
+附加schema字段（仅规划时）:
+  condition: "expr"             # 条件为false时跳过
+  adaptive: true                # 启用重规划信号检测（默认: false）
+  vars:
+    key: value
+
+插值语法: ${vars.KEY}, ${nodes.NAME.output}, ${nodes.NAME.status}
+
+示例——代码库分析+实现流水线:
+  nodes:
+    scan:
+      role: context
+      prompt: |
+        扫描代码库结构、核心模块、构建系统和测试覆盖率。
+        要彻底——读取实际文件，不要猜测。
+    read_docs:
+      role: context
+      prompt: |
+        阅读docs/design.md和docs/implementation-plan.md。
+        总结架构、关键决策和实现任务。
+    implement:
+      deps: [scan, read_docs]
+      prompt: |
+        基于计划实现功能。
+
+        代码库上下文: ${nodes.scan.output}
+        实现计划: ${nodes.read_docs.output}
+
+        先写测试（TDD），再实现。确保所有测试通过。
+    test:
+      role: gate
+      deps: [implement]
+      type: shell
+      cmd: "make test"
+    report:
+      deps: [test]
+      role: meta
+      prompt: |
+        总结: 实现了什么, test=${nodes.test.status}。
+        包含问题和后续步骤。
+
+规则:
+- 仅在B需要A的输出或A必须先成功时才添加deps
+- 最大化并行: 独立任务之间不设deps
+- 每个实现节点之后设gate（test/build/lint必须通过才能继续）
+- context节点收集信息，produce节点创建产物，gate节点验证
+- shell用于确定性命令（git/test/build），claude用于推理/分析/编码
+- 简短描述性的snake_case节点名
+
+仅输出有效YAML。无代码围栏，无额外说明。
+
+任务: """
+
+_PLAN_PROMPT = _p(_PLAN_PROMPT_EN, _PLAN_PROMPT_ZH)
+
+
+_BRAINSTORM_PROMPT_EN = """\
 You are a workflow architect. Analyze the task and design a DAG execution plan.
 Think step by step, making all decisions autonomously.
 
@@ -1450,6 +1734,31 @@ Output a structured design document. Be specific about what each subtask does,
 what it reads as input, and what it produces as output.
 
 Task: """
+
+_BRAINSTORM_PROMPT_ZH = """\
+你是工作流架构师。分析任务并设计DAG执行计划。
+逐步思考，所有决策自主完成。
+
+1. 分解: 将任务拆分为具体的子任务。
+2. 分类每个子任务:
+   - claude（AI推理/分析/编码）还是shell（确定性命令）？
+   - 角色: context（收集信息）、produce（创建产物）、gate（验证）、meta（报告）？
+3. 依赖关系: 哪些子任务需要其他子任务的输出？精确判断——只在子任务B确实
+   需要读取子任务A的输出时才添加依赖。
+4. 并行度: 哪些子任务是独立的？最大化并发执行。
+5. 验证门: 每个实现/编码子任务之后，添加shell验证步骤（test/build/lint）
+   作为gate。Gate失败阻断所有下游工作。
+6. 资源估算: 每个claude子任务默认max_runs 0（无限制，完成信号驱动）。
+   仅在需要控制成本时设置max_runs或timeout:
+   - 轻量（阅读/总结）: max_runs 3
+   - 中等（分析/规划）: max_runs 8
+   - 重型（实现/编码）: 通常不限制
+
+输出结构化的设计文档。具体说明每个子任务做什么、读取什么输入、产出什么输出。
+
+任务: """
+
+_BRAINSTORM_PROMPT = _p(_BRAINSTORM_PROMPT_EN, _BRAINSTORM_PROMPT_ZH)
 
 
 def _call_claude(prompt: str, timeout: int = 120) -> str:
