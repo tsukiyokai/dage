@@ -1743,7 +1743,7 @@ def main():
     p_plan = sub.add_parser("plan", help="AI-generate workflow from description")
     p_plan.add_argument("description", help="task description or path to idea file")
     p_plan.add_argument("-o", "--output",
-                        help="output file (default: .dage/plans/<timestamp>.yaml)")
+                        help="output file (default: .dage/workflows/<timestamp>.yaml)")
 
     args = parser.parse_args()
 
@@ -1818,7 +1818,9 @@ def main():
         except Exception as e:
             _log(f"warning: validation failed: {e}")
 
-        out = args.output or os.path.join(plan_dir, f"{ts}.yaml")
+        wf_dir = os.path.join(".dage", "workflows")
+        os.makedirs(wf_dir, exist_ok=True)
+        out = args.output or os.path.join(wf_dir, f"{ts}.yaml")
         with open(out, "w") as f:
             f.write(raw + "\n")
         _log(f"wrote {out}")
