@@ -1701,22 +1701,28 @@ Output a structured work stream document.
 
 Design: """
 
-def generate_plan(description: str) -> tuple[str, str]:
-    """Four-phase plan generation: mature → work streams → DAG design → YAML."""
+_SKIP_MATURE_THRESHOLD = 2000  # chars: inputs above this are already a design doc
 
-    # phase 1: mature the raw idea into a well-scoped design
-    _log("  phase 1/4: maturing idea...")
-    mature = _call_claude(_MATURE_PROMPT + description, timeout=300)
-    _log(f"  design: {len(mature)} chars")
+def generate_plan(description: str) -> tuple[str, str]:
+    """Multi-phase plan generation: [mature] → work streams → DAG design → YAML."""
+
+    # phase 1: skip if input is already a substantial design document
+    if len(description) > _SKIP_MATURE_THRESHOLD:
+        _log(f"  phase 1: skipped (input {len(description)} chars, already a design doc)")
+        mature = description
+    else:
+        _log("  phase 1: maturing idea...")
+        mature = _call_claude(_MATURE_PROMPT + description, timeout=600)
+        _log(f"  design: {len(mature)} chars")
 
     # phase 2: decompose design into independent work streams + verification boundaries
     _log("  phase 2/4: decomposing work streams...")
-    streams = _call_claude(_PLAN_DOC_PROMPT + mature, timeout=300)
+    streams = _call_claude(_PLAN_DOC_PROMPT + mature, timeout=600)
     _log(f"  streams: {len(streams)} chars")
 
     # phase 3: map work streams to dage DAG structure (nodes/roles/deps/gates)
     _log("  phase 3/4: mapping to DAG...")
-    design = _call_claude(_BRAINSTORM_PROMPT + streams, timeout=300)
+    design = _call_claude(_BRAINSTORM_PROMPT + streams, timeout=600)
     _log(f"  dag: {len(design)} chars")
 
     # phase 4: generate YAML
@@ -1725,7 +1731,7 @@ def generate_plan(description: str) -> tuple[str, str]:
         f"\nDesign document:\n{design}\n\n"
         f"Original task: {description}"
     )
-    raw = _call_claude(gen_prompt, timeout=300)
+    raw = _call_claude(gen_prompt, timeout=600)
     return _extract_yaml(raw), design
 
 def _extract_yaml(text: str) -> str:
