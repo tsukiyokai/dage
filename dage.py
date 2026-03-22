@@ -1537,29 +1537,41 @@ Output ONLY valid YAML. No fences, no commentary.
 
 Task: """
 
-_BRAINSTORM_PROMPT = """You are a workflow architect. An execution plan is provided below (already brainstormed
-and structured). Design a DAG execution plan from it.
-Think step by step, making all decisions autonomously.
+_BRAINSTORM_PROMPT = """You are a dage DAG architect. Map work streams into a dage-specific
+DAG structure. The work streams below are already decomposed — your job is to translate
+them into dage's node/role/dependency model, not to re-decompose.
+Make all decisions autonomously.
 
-1. DECOMPOSE: Break the execution plan into concrete subtasks suitable for DAG execution.
-2. CLASSIFY each subtask:
-   - claude (AI reasoning/analysis/coding) or shell (deterministic command)?
-   - role: context (gather info), produce (create artifacts), gate (verify), meta (report)?
-3. DEPENDENCIES: Which subtasks need outputs from others? Be precise — only add
-   a dependency when subtask B actually reads subtask A's output.
-4. PARALLELISM: Which subtasks are independent? Maximize concurrent execution.
-5. GATES: After every implementation/coding subtask, add a shell verification
-   step (test/build/lint) as a gate. Gate failure blocks all downstream work.
-6. RESOURCE ESTIMATE: For each claude subtask, default is max_runs 0 (unlimited,
-   completion-signal-driven). Only set max_runs or timeout to cap cost:
-   - Light (reading/summarizing): max_runs 3 if capping
-   - Medium (analysis/planning): max_runs 8 if capping
-   - Heavy (implementation/coding): usually leave unlimited
+For each work stream, decide:
 
-Output a structured design document. Be specific about what each subtask does,
-what it reads as input, and what it produces as output.
+1. NODE MAPPING: One work stream typically becomes:
+   - A `claude` node (the implementation work — AI agent with full codebase access)
+   - A `shell` gate node (the verification command from the work stream)
+   If a stream needs codebase context first, add a `context` node before it.
+   If the workflow needs a final summary, add a `meta` node at the end.
 
-Task: """
+2. CLASSIFY each node:
+   - type: `claude` (AI reasoning/analysis/coding) or `shell` (deterministic command)
+   - role: `context` (gather info, read-only), `produce` (create/modify artifacts),
+     `gate` (verify — failure blocks all downstream), `meta` (report/summarize)
+
+3. DEPENDENCIES: Map the work stream dependencies to node deps. Also add deps from
+   each gate to its corresponding produce node. Be precise — only add a dependency
+   when node B actually reads node A's output via ${nodes.A.output}.
+
+4. NODE PROMPTS: For claude nodes, the prompt is a GOAL, not a script.
+   - State what to achieve + what upstream context to use
+   - Do NOT prescribe implementation steps — the agent decides in context
+   - Inject upstream context via ${nodes.NAME.output}
+
+5. RESOURCE ESTIMATE: For each claude node, default max_runs = 0 (unlimited,
+   completion-signal-driven). Only cap to limit cost:
+   - Context/read-only tasks: max_runs 1-3
+   - Implementation tasks: usually leave unlimited (0)
+
+Output a structured DAG design. For each node: name, type, role, deps, prompt/cmd.
+
+Work streams: """
 
 def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     cmd = ["claude", "-p", prompt, "--output-format", "text"]
@@ -1626,74 +1638,75 @@ Output a design document. Be specific and actionable, not vague. No code — jus
 
 Idea: """
 
-_PLAN_DOC_PROMPT = """You are a technical planner. Turn a design spec into a structured implementation plan.
+_PLAN_DOC_PROMPT = """You are a workflow decomposer. Break a design into independent work streams
+suitable for parallel AI agent execution.
 Make ALL decisions autonomously — do not ask questions.
 
-Assume the engineer executing this plan has zero context for the codebase and questionable taste. Document everything they need: which files to touch, how to test, what docs to check. Give them the whole plan as bite-sized tasks.
+Key principle: each work stream will be executed by a full AI coding agent (Claude Code)
+with complete codebase access. The agent can read files, make design decisions, write tests,
+debug failures, and iterate autonomously. Your job is to define WHAT to achieve and HOW
+to verify it — not HOW to implement it. The agent decides implementation details in context.
 
 Process:
 
-1. SCOPE CHECK: If the design covers multiple independent subsystems that weren't decomposed, break into separate plans — one per subsystem. Each plan should produce working, testable software on its own.
+1. SCOPE CHECK: If the design covers multiple independent subsystems that weren't
+   decomposed, split into separate work stream documents — one per subsystem.
 
-2. FILE STRUCTURE: Before defining tasks, map out which files will be created or modified and what each one is responsible for. This is where decomposition decisions get locked in.
-   - Design units with clear boundaries and well-defined interfaces
-   - One clear responsibility per file. Prefer smaller, focused files over large ones
-   - Files that change together should live together. Split by responsibility, not by technical layer
-   - In existing codebases, follow established patterns. If a file has grown unwieldy, including a split in the plan is reasonable
+2. IDENTIFY WORK STREAMS: What are the independent units of work? A work stream is
+   independent when it can be implemented and verified without waiting for another stream's
+   code changes. Typical streams: "implement auth module", "add API endpoints",
+   "write migration script" — NOT "write function X", "add test for Y", "update import in Z".
+   Coarse is better than fine. When in doubt, merge two streams into one.
 
-3. TASK BREAKDOWN: Ordered list of concrete tasks. Bite-sized granularity —
-   each step is one action (2-5 minutes, not an hour). For each task:
-   - What to build (specific, not "add validation")
-   - Which files to create/modify (exact paths)
-   - How to verify it works (exact test commands with expected output)
-   - What to commit and commit message
-   - Include key interface signatures and critical logic — not "add validation" but
-     the actual function signature and what it validates
+3. VERIFICATION BOUNDARIES: For each stream, what shell command proves it worked?
+   (pytest, cargo test, make build, curl endpoint, etc.)
+   Everything between two verification boundaries is ONE stream.
+   If you can't write a verification command, the stream is too vague — make it concrete.
 
-   TDD cycle for each task (this IS the granularity):
-     Step 1: Write the failing test
-     Step 2: Run it to make sure it fails
-     Step 3: Implement the minimal code to make the test pass
-     Step 4: Run the tests and make sure they pass
-     Step 5: Commit
+4. MAP DEPENDENCIES: Which streams need another stream's output or code changes?
+   Only add dependency when stream B literally cannot start without stream A's artifacts.
+   Independent streams run in parallel automatically. Minimize dependencies.
 
-4. DEPENDENCY ORDER: Which tasks must complete before others can start?
-   Which can run in parallel? Be explicit.
+5. DEFINE EACH STREAM:
+   - Goal: what to achieve (one sentence, outcome-focused)
+   - Context: what upstream information or artifacts it needs
+   - Verification: exact shell command to prove correctness
+   - Constraints: patterns to follow, things not to break, boundaries to respect
+   Do NOT specify: which functions to write, which files to create, interface signatures,
+   or implementation steps. The executing agent has full codebase access and decides these.
 
-5. RISK AREAS: Where things are most likely to go wrong. What to watch for.
+6. RISK AREAS: Where things are most likely to go wrong. What to watch for.
 
-Principles: DRY. YAGNI. TDD (write failing test first, then implement). Frequent commits.
-Smaller, well-bounded units are easier to reason about — you think better about code
-you can hold in context at once, and edits are more reliable when files are focused.
+Anti-pattern: prescribing implementation details. This plan is made WITHOUT seeing the
+codebase. The executing agent WILL see the codebase. Trust it to make better implementation
+decisions than you can from here. State goals and constraints, not recipes.
 
-Before outputting, self-review your plan against these criteria (fix issues inline, do not output the review separately):
-- Completeness: no TODOs, placeholders, or incomplete tasks
-- Spec alignment: plan covers all design requirements, no major scope creep
-- Task decomposition: tasks have clear boundaries, steps are actionable
-- Buildability: could an engineer follow this plan without getting stuck?
+Before outputting, self-review:
+- Is each stream verifiable with a shell command?
+- Are dependencies minimal? Could any stream be made independent?
+- Am I prescribing implementation details the agent can figure out in context?
+  If so, remove them — state the goal and constraint instead.
 
-Output a structured plan document with key interface signatures and logic for each task.
+Output a structured work stream document.
 
 Design: """
 
 def generate_plan(description: str) -> tuple[str, str]:
-    """Four-phase plan generation: mature idea → execution plan → DAG design → YAML."""
+    """Four-phase plan generation: mature → work streams → DAG design → YAML."""
 
     # phase 1: mature the raw idea into a well-scoped design
     _log("  phase 1/4: maturing idea...")
     mature = _call_claude(_MATURE_PROMPT + description, timeout=300)
     _log(f"  design: {len(mature)} chars")
 
-    # phase 2: turn design into structured execution plan
-    _log("  phase 2/4: writing execution plan...")
-    plan = _call_claude(_PLAN_DOC_PROMPT + mature, timeout=300)
-    _log(f"  plan: {len(plan)} chars")
+    # phase 2: decompose design into independent work streams + verification boundaries
+    _log("  phase 2/4: decomposing work streams...")
+    streams = _call_claude(_PLAN_DOC_PROMPT + mature, timeout=300)
+    _log(f"  streams: {len(streams)} chars")
 
-    # phase 3: decompose plan into DAG subtasks with deps/gates
-    _log("  phase 3/4: designing DAG...")
-    design = _call_claude(
-        _BRAINSTORM_PROMPT + f"\n\nExecution plan:\n{plan}",
-        timeout=300)
+    # phase 3: map work streams to dage DAG structure (nodes/roles/deps/gates)
+    _log("  phase 3/4: mapping to DAG...")
+    design = _call_claude(_BRAINSTORM_PROMPT + streams, timeout=300)
     _log(f"  dag: {len(design)} chars")
 
     # phase 4: generate YAML
