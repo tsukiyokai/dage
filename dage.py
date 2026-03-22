@@ -1578,24 +1578,12 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     cmd = ["claude", "-p", prompt, "--output-format", "text"]
     if system:
         cmd += ["--append-system-prompt", system]
-    # show elapsed time while waiting (claude -p buffers all output)
-    t0 = time.monotonic()
-    stop_ev = threading.Event()
-    def _ticker():
-        while not stop_ev.wait(60):
-            elapsed = time.monotonic() - t0
-            m, s = divmod(int(elapsed), 60)
-            _log(f"    ... {m}:{s:02d}")
-    ticker = threading.Thread(target=_ticker, daemon=True)
-    ticker.start()
     try:
         rc, stdout, stderr = _run_streamed("_plan", cmd, timeout=timeout)
     except FileNotFoundError:
         raise RuntimeError("'claude' CLI not found — install Claude Code first")
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"claude timed out ({timeout}s)")
-    finally:
-        stop_ev.set()
     if rc != 0:
         raise RuntimeError(f"claude failed: {stderr.strip()}")
     return stdout.strip()
