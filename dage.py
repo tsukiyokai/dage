@@ -439,8 +439,7 @@ _LANG = "zh"  # default language for prompts, overridable via wf["lang"]
 def _p(en: str, zh: str) -> str:
     return zh if _LANG == "zh" else en
 
-_ANNOTATE_PROMPT_EN = """\
-Review design docs against the actual implementation. Think deeply about whether
+_ANNOTATE_PROMPT_EN = """Review design docs against the actual implementation. Think deeply about whether
 each difference is a real problem or an intentional design evolution.
 
 Design docs: {design_docs}
@@ -465,8 +464,7 @@ Rules:
 - If no real discrepancies, do nothing
 """
 
-_ANNOTATE_PROMPT_ZH = """\
-对照实际实现审查设计文档。深入思考每处差异究竟是真正的问题，还是实现过程中的合理演进。
+_ANNOTATE_PROMPT_ZH = """对照实际实现审查设计文档。深入思考每处差异究竟是真正的问题，还是实现过程中的合理演进。
 
 设计文档: {design_docs}
 
@@ -664,8 +662,7 @@ def _auto_commit(gate_name: str, nodes: dict[str, Node],
 
 # ==== Gate Autofix
 
-_AUTOFIX_PROMPT_EN = """\
-A build/test gate failed. Diagnose and fix the issue.
+_AUTOFIX_PROMPT_EN = """A build/test gate failed. Diagnose and fix the issue.
 
 Gate command:
 {cmd}
@@ -679,8 +676,7 @@ Instructions:
 3. Run the gate command yourself to verify
 """
 
-_AUTOFIX_PROMPT_ZH = """\
-构建/测试gate失败了。诊断并修复问题。
+_AUTOFIX_PROMPT_ZH = """构建/测试gate失败了。诊断并修复问题。
 
 Gate命令:
 {cmd}
@@ -749,8 +745,7 @@ def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
             return name, m.group(1).strip()
     return None
 
-_DAGE_KNOWLEDGE_EN = """\
-How dage works:
+_DAGE_KNOWLEDGE_EN = """How dage works:
 - Each `claude` node spawns a ccx session — an iterative Claude Code development loop.
   ccx runs Claude Code in multiple iterations (controlled by max_runs).
   Iteration 1: agent plans the task and creates a notes file.
@@ -788,8 +783,7 @@ Node schema:
     max_runs: 0                   # ccx iterations (0=unlimited, completion-signal-driven)
 """
 
-_DAGE_KNOWLEDGE_ZH = """\
-dage工作原理:
+_DAGE_KNOWLEDGE_ZH = """dage工作原理:
 - 每个`claude`节点启动一个ccx会话——迭代式Claude Code开发循环。
   ccx以多次迭代运行Claude Code（由max_runs控制）。
   第1次迭代: agent规划任务并创建notes文件。
@@ -829,8 +823,7 @@ ccx prompt编写指南:
 
 _DAGE_KNOWLEDGE = _p(_DAGE_KNOWLEDGE_EN, _DAGE_KNOWLEDGE_ZH)
 
-_REPLAN_PROMPT_EN = """\
-You are a workflow replanner. A running DAG needs adjustment.
+_REPLAN_PROMPT_EN = """You are a workflow replanner. A running DAG needs adjustment.
 
 {dage_knowledge}
 
@@ -871,8 +864,7 @@ Output ONLY valid YAML (no fences, no commentary):
       max_runs: 0      # ccx iterations (0=unlimited, default)
 """
 
-_REPLAN_PROMPT_ZH = """\
-你是工作流重规划器。一个运行中的DAG需要调整。
+_REPLAN_PROMPT_ZH = """你是工作流重规划器。一个运行中的DAG需要调整。
 
 {dage_knowledge}
 
@@ -1622,8 +1614,7 @@ def print_status(repo_dir: str):
 
 # ==== Plan Generation
 
-_PLAN_PROMPT_EN = """\
-You are a workflow planner for dage, a DAG-based workflow orchestrator.
+_PLAN_PROMPT_EN = """You are a workflow planner for dage, a DAG-based workflow orchestrator.
 Turn the task description into a valid dage YAML workflow.
 
 """ + _DAGE_KNOWLEDGE_EN.replace("{{", "{").replace("}}", "}") + """
@@ -1680,8 +1671,7 @@ Output ONLY valid YAML. No fences, no commentary.
 
 Task: """
 
-_PLAN_PROMPT_ZH = """\
-你是dage的工作流规划器，dage是一个基于DAG的工作流编排器。
+_PLAN_PROMPT_ZH = """你是dage的工作流规划器，dage是一个基于DAG的工作流编排器。
 将任务描述转化为有效的dage YAML工作流。
 
 """ + _DAGE_KNOWLEDGE_ZH.replace("{{", "{").replace("}}", "}") + """
@@ -1741,8 +1731,7 @@ _PLAN_PROMPT_ZH = """\
 _PLAN_PROMPT = _p(_PLAN_PROMPT_EN, _PLAN_PROMPT_ZH)
 
 
-_BRAINSTORM_PROMPT_EN = """\
-You are a workflow architect. An execution plan is provided below (already brainstormed
+_BRAINSTORM_PROMPT_EN = """You are a workflow architect. An execution plan is provided below (already brainstormed
 and structured). Design a DAG execution plan from it.
 Think step by step, making all decisions autonomously.
 
@@ -1766,8 +1755,7 @@ what it reads as input, and what it produces as output.
 
 Task: """
 
-_BRAINSTORM_PROMPT_ZH = """\
-你是工作流架构师。下面提供了一份执行计划（已经过头脑风暴和结构化）。
+_BRAINSTORM_PROMPT_ZH = """你是工作流架构师。下面提供了一份执行计划（已经过头脑风暴和结构化）。
 基于它设计DAG执行计划。逐步思考，所有决策自主完成。
 
 1. 分解: 将执行计划拆分为适合DAG执行的具体子任务。
@@ -1807,30 +1795,22 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     return proc.stdout.strip()
 
 
-_MATURE_PROMPT_EN = """\
-You are a product design thinker. Turn a raw idea into a fully formed design spec.
+_MATURE_PROMPT_EN = """You are a product design thinker. Turn a raw idea into a fully formed design spec.
 Make ALL decisions autonomously — do not ask questions, do not wait for input.
 
-Anti-pattern: "This is too simple to need a design." Every project gets a design. \
-"Simple" projects are where unexamined assumptions cause the most wasted work.
+Anti-pattern: "This is too simple to need a design." Every project gets a design. "Simple" projects are where unexamined assumptions cause the most wasted work.
 
 Process (execute all steps in one pass):
 
-1. EXPLORE CONTEXT: Mentally simulate checking the project state — what files, docs, \
-   existing patterns, and constraints likely exist? What's the current state of things?
+1. EXPLORE CONTEXT: Mentally simulate checking the project state — what files, docs,    existing patterns, and constraints likely exist? What's the current state of things?
 
-2. SCOPE CHECK: Does this request describe multiple independent subsystems? If so, \
-   decompose into sub-projects first. Each sub-project gets its own design. Don't refine \
-   details of something that needs decomposition first.
+2. SCOPE CHECK: Does this request describe multiple independent subsystems? If so,    decompose into sub-projects first. Each sub-project gets its own design. Don't refine    details of something that needs decomposition first.
 
-3. UNDERSTAND PURPOSE: What is the user trying to achieve? What problem does this solve? \
-   What are the constraints and success criteria? Focus on purpose, not just mechanics.
+3. UNDERSTAND PURPOSE: What is the user trying to achieve? What problem does this solve?    What are the constraints and success criteria? Focus on purpose, not just mechanics.
 
-4. EXPLORE APPROACHES: Propose 2-3 different approaches with trade-offs. Lead with your \
-   recommended option and explain why. Don't just list — reason about which is best and why.
+4. EXPLORE APPROACHES: Propose 2-3 different approaches with trade-offs. Lead with your    recommended option and explain why. Don't just list — reason about which is best and why.
 
-5. PRESENT DESIGN: Cover these aspects, scaling each to its complexity \
-   (a few sentences if straightforward, up to 200-300 words if nuanced):
+5. PRESENT DESIGN: Cover these aspects, scaling each to its complexity    (a few sentences if straightforward, up to 200-300 words if nuanced):
    - Architecture: overall structure and key components
    - Data flow: how information moves through the system
    - Error handling: what can go wrong and how to handle it
@@ -1841,20 +1821,15 @@ Process (execute all steps in one pass):
    - Each unit communicates through well-defined interfaces
    - Each unit can be understood and tested independently
    - For each unit: what does it do, how do you use it, what does it depend on?
-   - Test: can someone understand what a unit does without reading its internals? \
-     Can you change the internals without breaking consumers? If not, boundaries need work.
+   - Test: can someone understand what a unit does without reading its internals?      Can you change the internals without breaking consumers? If not, boundaries need work.
 
 7. EXISTING CODEBASE AWARENESS:
    - Follow existing patterns. Don't propose unrelated refactoring.
-   - Where existing code has problems affecting the work (file too large, unclear boundaries, \
-     tangled responsibilities), include targeted improvements as part of the design — \
-     the way a good developer improves code they're working in.
+   - Where existing code has problems affecting the work (file too large, unclear boundaries,      tangled responsibilities), include targeted improvements as part of the design —      the way a good developer improves code they're working in.
 
-8. APPLY YAGNI RUTHLESSLY: Remove every feature that isn't strictly necessary. \
-   Fewer features done well beats many features done poorly.
+8. APPLY YAGNI RUTHLESSLY: Remove every feature that isn't strictly necessary.    Fewer features done well beats many features done poorly.
 
-Before outputting, self-review your design against these criteria (fix issues inline, \
-do not output the review separately):
+Before outputting, self-review your design against these criteria (fix issues inline, do not output the review separately):
 - Completeness: no TODOs, placeholders, or "TBD" sections
 - Consistency: no internal contradictions or conflicting requirements
 - Clarity: no requirement ambiguous enough to cause building the wrong thing
@@ -1865,28 +1840,22 @@ Output a design document. Be specific and actionable, not vague. No code — jus
 
 Idea: """
 
-_MATURE_PROMPT_ZH = """\
-你是产品设计思考者。将原始想法转化为完整的设计规格。
+_MATURE_PROMPT_ZH = """你是产品设计思考者。将原始想法转化为完整的设计规格。
 所有决策自主完成——不要提问，不要等待输入。
 
-反模式: "这太简单了不需要设计。" 每个项目都要有设计。\
-"简单"项目恰恰是未经审视的假设造成最多浪费的地方。
+反模式: "这太简单了不需要设计。" 每个项目都要有设计。"简单"项目恰恰是未经审视的假设造成最多浪费的地方。
 
 流程（一次性执行所有步骤）:
 
 1. 探索上下文: 模拟检查项目状态——可能存在哪些文件、文档、现有模式和约束？当前状态如何？
 
-2. 范围检查: 需求是否描述了多个独立子系统？如果是，先分解为子项目。\
-   每个子项目单独设计。不要在需要分解的东西上花时间打磨细节。
+2. 范围检查: 需求是否描述了多个独立子系统？如果是，先分解为子项目。   每个子项目单独设计。不要在需要分解的东西上花时间打磨细节。
 
-3. 理解目的: 用户想达成什么？解决什么问题？约束和成功标准是什么？\
-   聚焦目的，不仅仅是机制。
+3. 理解目的: 用户想达成什么？解决什么问题？约束和成功标准是什么？   聚焦目的，不仅仅是机制。
 
-4. 探索方案: 提出2-3种不同方案及其trade-off。以推荐方案领衔并解释理由。\
-   不要只列举——推理哪个最好以及为什么。
+4. 探索方案: 提出2-3种不同方案及其trade-off。以推荐方案领衔并解释理由。   不要只列举——推理哪个最好以及为什么。
 
-5. 呈现设计: 覆盖以下方面，每个方面的篇幅与其复杂度成正比\
-   （直观的用几句话，有深度的用200-300字）:
+5. 呈现设计: 覆盖以下方面，每个方面的篇幅与其复杂度成正比   （直观的用几句话，有深度的用200-300字）:
    - 架构: 整体结构和关键组件
    - 数据流: 信息如何在系统中流动
    - 错误处理: 什么可能出错，如何应对
@@ -1897,16 +1866,13 @@ _MATURE_PROMPT_ZH = """\
    - 每个单元通过定义良好的接口通信
    - 每个单元可以独立理解和测试
    - 对每个单元: 它做什么，怎么用它，它依赖什么？
-   - 检验: 不读内部实现能否理解一个单元做什么？修改内部实现会不会破坏使用者？\
-     如果不能，边界需要重新设计。
+   - 检验: 不读内部实现能否理解一个单元做什么？修改内部实现会不会破坏使用者？     如果不能，边界需要重新设计。
 
 7. 现有代码库意识:
    - 遵循现有模式。不要提议无关的重构。
-   - 当现有代码的问题影响到当前工作（文件过大、边界不清、职责纠缠），\
-     将针对性的改进纳入设计——就像一个好开发者在工作中顺手改善代码。
+   - 当现有代码的问题影响到当前工作（文件过大、边界不清、职责纠缠），     将针对性的改进纳入设计——就像一个好开发者在工作中顺手改善代码。
 
-8. 严格执行YAGNI: 移除每一个非严格必要的功能。\
-   少量功能做好胜过大量功能做差。
+8. 严格执行YAGNI: 移除每一个非严格必要的功能。   少量功能做好胜过大量功能做差。
 
 输出前，对设计进行自检（发现问题直接修正，不要单独输出检查结果）:
 - 完整性: 无TODO、占位符、"待定"
@@ -1921,44 +1887,34 @@ _MATURE_PROMPT_ZH = """\
 
 _MATURE_PROMPT = _p(_MATURE_PROMPT_EN, _MATURE_PROMPT_ZH)
 
-_PLAN_DOC_PROMPT_EN = """\
-You are a technical planner. Turn a design spec into a structured implementation plan.
+_PLAN_DOC_PROMPT_EN = """You are a technical planner. Turn a design spec into a structured implementation plan.
 Make ALL decisions autonomously — do not ask questions.
 
-Assume the engineer executing this plan has zero context for the codebase and \
-questionable taste. Document everything they need: which files to touch, how to test, \
-what docs to check. Give them the whole plan as bite-sized tasks.
+Assume the engineer executing this plan has zero context for the codebase and questionable taste. Document everything they need: which files to touch, how to test, what docs to check. Give them the whole plan as bite-sized tasks.
 
 Process:
 
-1. SCOPE CHECK: If the design covers multiple independent subsystems that weren't \
-   decomposed, break into separate plans — one per subsystem. Each plan should produce \
-   working, testable software on its own.
+1. SCOPE CHECK: If the design covers multiple independent subsystems that weren't    decomposed, break into separate plans — one per subsystem. Each plan should produce    working, testable software on its own.
 
-2. FILE STRUCTURE: Before defining tasks, map out which files will be created or modified \
-   and what each one is responsible for. This is where decomposition decisions get locked in.
+2. FILE STRUCTURE: Before defining tasks, map out which files will be created or modified    and what each one is responsible for. This is where decomposition decisions get locked in.
    - Design units with clear boundaries and well-defined interfaces
    - One clear responsibility per file. Prefer smaller, focused files over large ones
    - Files that change together should live together. Split by responsibility, not by technical layer
-   - In existing codebases, follow established patterns. If a file has grown unwieldy, \
-     including a split in the plan is reasonable
+   - In existing codebases, follow established patterns. If a file has grown unwieldy,      including a split in the plan is reasonable
 
-3. TASK BREAKDOWN: Ordered list of concrete tasks. Bite-sized granularity — \
-   each step is one action (a few minutes, not an hour). For each task:
+3. TASK BREAKDOWN: Ordered list of concrete tasks. Bite-sized granularity —    each step is one action (a few minutes, not an hour). For each task:
    - What to build (specific, not "add validation")
    - Which files to create/modify (exact paths)
    - How to verify it works (exact test commands with expected output)
    - What to commit and commit message
 
-4. DEPENDENCY ORDER: Which tasks must complete before others can start? \
-   Which can run in parallel? Be explicit.
+4. DEPENDENCY ORDER: Which tasks must complete before others can start?    Which can run in parallel? Be explicit.
 
 5. RISK AREAS: Where things are most likely to go wrong. What to watch for.
 
 Principles: DRY. YAGNI. TDD (write failing test first, then implement). Frequent commits.
 
-Before outputting, self-review your plan against these criteria (fix issues inline, \
-do not output the review separately):
+Before outputting, self-review your plan against these criteria (fix issues inline, do not output the review separately):
 - Completeness: no TODOs, placeholders, or incomplete tasks
 - Spec alignment: plan covers all design requirements, no major scope creep
 - Task decomposition: tasks have clear boundaries, steps are actionable
@@ -1968,28 +1924,22 @@ Output a structured plan document. No code snippets — clear descriptions of wh
 
 Design: """
 
-_PLAN_DOC_PROMPT_ZH = """\
-你是技术规划师。将设计规格转化为结构化的实施计划。
+_PLAN_DOC_PROMPT_ZH = """你是技术规划师。将设计规格转化为结构化的实施计划。
 所有决策自主完成——不要提问。
 
-假设执行此计划的工程师对代码库零上下文且品味存疑。\
-记录他们需要的一切: 动哪些文件、怎么测试、查什么文档。\
-将完整计划拆解为小粒度任务。
+假设执行此计划的工程师对代码库零上下文且品味存疑。记录他们需要的一切: 动哪些文件、怎么测试、查什么文档。将完整计划拆解为小粒度任务。
 
 流程:
 
-1. 范围检查: 如果设计涵盖了多个未分解的独立子系统，\
-   拆成独立计划——每个子系统一份。每份计划应能独立产出可工作、可测试的软件。
+1. 范围检查: 如果设计涵盖了多个未分解的独立子系统，   拆成独立计划——每个子系统一份。每份计划应能独立产出可工作、可测试的软件。
 
-2. 文件结构: 在定义任务之前，先列出要创建/修改的文件及其职责。\
-   这是分解决策被锁定的地方。
+2. 文件结构: 在定义任务之前，先列出要创建/修改的文件及其职责。   这是分解决策被锁定的地方。
    - 设计清晰边界和定义良好的接口
    - 每个文件单一职责。优先选择小而聚焦的文件而非大而全的文件
    - 一起变更的文件应该放在一起。按职责拆分，不按技术层拆分
    - 在现有代码库中遵循既有模式。如果某文件已经臃肿，计划中包含拆分是合理的
 
-3. 任务分解: 有序的具体任务列表。小粒度——每步一个动作（几分钟，不是一小时）。\
-   每个任务:
+3. 任务分解: 有序的具体任务列表。小粒度——每步一个动作（几分钟，不是一小时）。   每个任务:
    - 构建什么（具体，不是"添加校验"）
    - 创建/修改哪些文件（精确路径）
    - 如何验证（精确的测试命令和预期输出）
