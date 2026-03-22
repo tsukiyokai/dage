@@ -434,12 +434,7 @@ def should_skip(node: Node, ctx: dict) -> bool:
 
 # ==== Prompt Templates (en + zh)
 
-_LANG = "zh"  # default language for prompts, overridable via wf["lang"]
-
-def _p(en: str, zh: str) -> str:
-    return zh if _LANG == "zh" else en
-
-_ANNOTATE_PROMPT_EN = """Review design docs against the actual implementation. Think deeply about whether
+_ANNOTATE_PROMPT = """Review design docs against the actual implementation. Think deeply about whether
 each difference is a real problem or an intentional design evolution.
 
 Design docs: {design_docs}
@@ -464,31 +459,6 @@ Rules:
 - If no real discrepancies, do nothing
 """
 
-_ANNOTATE_PROMPT_ZH = """对照实际实现审查设计文档。深入思考每处差异究竟是真正的问题，还是实现过程中的合理演进。
-
-设计文档: {design_docs}
-
-刚完成并验证的实现内容:
-{impl_summary}
-
-对每处确认的偏差:
-1. 修正设计文档文本使其匹配实际实现（更新数值、约束、描述）
-2. 在修正处上方插入HTML注释，记录变更内容和原因:
-
-<!-- dage-note: {date}
-CHANGED: [原文本] -> [新文本]
-REASON: [实现为何偏离设计，实现过程中发现了什么]
--->
-
-规则:
-- 先思考再动手: 这是真正的错误，还是文档中有意的简化？
-- 修正真实问题: 错误的数值、过时的假设、缺失的约束、不正确的公式
-- 跳过: 风格差异、措辞偏好、详略程度的选择
-- 每处修正必须在其上方附带dage-note注释记录变更
-- 如果没有真实偏差，什么都不做
-"""
-
-_ANNOTATE_PROMPT = _p(_ANNOTATE_PROMPT_EN, _ANNOTATE_PROMPT_ZH)
 
 def _annotate_design_docs(wf: dict, nodes: dict[str, Node],
                           results: dict[str, NodeResult],
@@ -662,7 +632,7 @@ def _auto_commit(gate_name: str, nodes: dict[str, Node],
 
 # ==== Gate Autofix
 
-_AUTOFIX_PROMPT_EN = """A build/test gate failed. Diagnose and fix the issue.
+_AUTOFIX_PROMPT = """A build/test gate failed. Diagnose and fix the issue.
 
 Gate command:
 {cmd}
@@ -676,21 +646,6 @@ Instructions:
 3. Run the gate command yourself to verify
 """
 
-_AUTOFIX_PROMPT_ZH = """构建/测试gate失败了。诊断并修复问题。
-
-Gate命令:
-{cmd}
-
-错误输出:
-{error_output}
-{upstream_context}
-步骤:
-1. 仔细阅读错误信息，定位根因
-2. 修复问题（安装工具、修改代码等）
-3. 自行运行gate命令验证修复结果
-"""
-
-_AUTOFIX_PROMPT = _p(_AUTOFIX_PROMPT_EN, _AUTOFIX_PROMPT_ZH)
 
 def _autofix_gate(gate: Node, gate_result: NodeResult,
                   nodes: dict[str, Node], ctx: dict,
@@ -745,7 +700,7 @@ def detect_replan(nodes: dict[str, Node], results: dict[str, NodeResult],
             return name, m.group(1).strip()
     return None
 
-_DAGE_KNOWLEDGE_EN = """How dage works:
+_DAGE_KNOWLEDGE = """How dage works:
 - Each `claude` node spawns a ccx session — an iterative Claude Code development loop.
   ccx runs Claude Code in multiple iterations (controlled by max_runs).
   Iteration 1: agent plans the task and creates a notes file.
@@ -783,47 +738,8 @@ Node schema:
     max_runs: 0 # ccx iterations (0=unlimited, completion-signal-driven)
 """
 
-_DAGE_KNOWLEDGE_ZH = """dage工作原理:
-- 每个`claude`节点启动一个ccx会话——迭代式Claude Code开发循环。
-  ccx以多次迭代运行Claude Code（由max_runs控制）。
-  第1次迭代: agent规划任务并创建notes文件。
-  第2次及之后: agent基于计划执行，读取之前的notes作为上下文。
-  ccx自动处理: notes文件读写、完成信号、迭代上下文。
-  最终notes文件内容成为下游节点可用的${{nodes.NAME.output}}。
-- 每个`shell`节点运行一条命令。用途: git、测试、构建、lint、基准测试。
-- 同一层的节点（无相互依赖）自动并行执行。
-- `gate`节点失败会跳过其所有下游节点（短路）。
 
-ccx prompt编写指南:
-- prompt是你的目标，不是脚本。ccx会自动包装工作流上下文。
-- 聚焦于: 要达成什么 + 上游上下文。不要写"写入notes"（ccx会处理）。
-- 通过${{nodes.NAME.output}}注入上游上下文——即上游节点的notes文件内容。
-- max_runs = ccx迭代次数（每次是一个完整的Claude Code会话）:
-    0 无限制: 由完成信号停止（默认，推荐）
-    1-3 简单任务的上限
-    5-10 中等任务的上限
-    10+ 复杂任务的上限（有完成信号通常不必要）
-- 简单信息收集: 用`type: shell`加命令，而非ccx。
-- 实现节点之后，始终添加shell gate节点（cargo test、pytest、make）。
-
-节点schema:
-  <name>:
-    type: shell | claude
-    role: produce|context|gate|evaluate|gc|meta
-    deps: [a, b]
-    cmd: "..." # shell必填
-    prompt: | # claude必填
-      目标: ...
-      上游上下文: ${{nodes.upstream.output}}
-      具体任务: 1. ... 2. ...
-    retry: N
-    timeout: "30m" # 例如 1h, 5m, 30s
-    max_runs: 0 # ccx迭代次数（0=无限制，完成信号驱动）
-"""
-
-_DAGE_KNOWLEDGE = _p(_DAGE_KNOWLEDGE_EN, _DAGE_KNOWLEDGE_ZH)
-
-_REPLAN_PROMPT_EN = """You are a workflow replanner. A running DAG needs adjustment.
+_REPLAN_PROMPT = """You are a workflow replanner. A running DAG needs adjustment.
 
 {dage_knowledge}
 
@@ -864,48 +780,6 @@ Output ONLY valid YAML (no fences, no commentary):
       max_runs: 0 # ccx iterations (0=unlimited, default)
 """
 
-_REPLAN_PROMPT_ZH = """你是工作流重规划器。一个运行中的DAG需要调整。
-
-{dage_knowledge}
-
-原始任务: {task}
-
-已完成节点（不可修改）:
-{completed}
-
-触发节点'{trigger}'发出信号: {reason}
-触发节点输出（最后2000字符）:
-{output}
-
-待执行节点（可移除）:
-{pending}
-
-第{replan_seq}次重规划，最多{max_replans}次。最小化变更。
-
-规则:
-- 可以添加新节点（可依赖已完成或新节点）
-- 可以移除不再需要的待执行节点
-- 不能修改已完成节点。不允许循环依赖。
-- claude节点: prompt是目标（ccx自动处理notes和迭代上下文）
-- shell节点: cmd必须是有效的shell命令
-- 必须提供justification说明这些变更如何服务于原始任务
-
-仅输出有效YAML（无代码围栏，无额外说明）:
-  justification: "一句话: 此次重规划如何服务于原始任务"
-  remove: [name, ...]
-  add:
-    name:
-      type: shell | claude
-      role: produce | context | gate
-      deps: [...]
-      cmd: "..." # shell用
-      prompt: | # claude用
-        目标: ...
-        上下文: ...
-      max_runs: 0 # ccx迭代次数（0=无限制，默认）
-"""
-
-_REPLAN_PROMPT = _p(_REPLAN_PROMPT_EN, _REPLAN_PROMPT_ZH)
 
 def call_replanner(wf: dict, nodes: dict[str, Node],
                    results: dict[str, NodeResult],
@@ -1614,10 +1488,10 @@ def print_status(repo_dir: str):
 
 # ==== Plan Generation
 
-_PLAN_PROMPT_EN = """You are a workflow planner for dage, a DAG-based workflow orchestrator.
+_PLAN_PROMPT = """You are a workflow planner for dage, a DAG-based workflow orchestrator.
 Turn the task description into a valid dage YAML workflow.
 
-""" + _DAGE_KNOWLEDGE_EN.replace("{{", "{").replace("}}", "}") + """
+""" + _DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}") + """
 Additional schema fields (plan-only):
   condition: "expr" # skip if false
   adaptive: true # enable replan signal detection (default: false)
@@ -1671,67 +1545,9 @@ Output ONLY valid YAML. No fences, no commentary.
 
 Task: """
 
-_PLAN_PROMPT_ZH = """你是dage的工作流规划器，dage是一个基于DAG的工作流编排器。
-将任务描述转化为有效的dage YAML工作流。
-
-""" + _DAGE_KNOWLEDGE_ZH.replace("{{", "{").replace("}}", "}") + """
-附加schema字段（仅规划时）:
-  condition: "expr" # 条件为false时跳过
-  adaptive: true # 启用重规划信号检测（默认: false）
-  vars:
-    key: value
-
-插值语法: ${vars.KEY}, ${nodes.NAME.output}, ${nodes.NAME.status}
-
-示例——代码库分析+实现流水线:
-  nodes:
-    scan:
-      role: context
-      prompt: |
-        扫描代码库结构、核心模块、构建系统和测试覆盖率。
-        要彻底——读取实际文件，不要猜测。
-    read_docs:
-      role: context
-      prompt: |
-        阅读docs/design.md和docs/implementation-plan.md。
-        总结架构、关键决策和实现任务。
-    implement:
-      deps: [scan, read_docs]
-      prompt: |
-        基于计划实现功能。
-
-        代码库上下文: ${nodes.scan.output}
-        实现计划: ${nodes.read_docs.output}
-
-        先写测试（TDD），再实现。确保所有测试通过。
-    test:
-      role: gate
-      deps: [implement]
-      type: shell
-      cmd: "make test"
-    report:
-      deps: [test]
-      role: meta
-      prompt: |
-        总结: 实现了什么, test=${nodes.test.status}。
-        包含问题和后续步骤。
-
-规则:
-- 仅在B需要A的输出或A必须先成功时才添加deps
-- 最大化并行: 独立任务之间不设deps
-- 每个实现节点之后设gate（test/build/lint必须通过才能继续）
-- context节点收集信息，produce节点创建产物，gate节点验证
-- shell用于确定性命令（git/test/build），claude用于推理/分析/编码
-- 简短描述性的snake_case节点名
-
-仅输出有效YAML。无代码围栏，无额外说明。
-
-任务: """
-
-_PLAN_PROMPT = _p(_PLAN_PROMPT_EN, _PLAN_PROMPT_ZH)
 
 
-_BRAINSTORM_PROMPT_EN = """You are a workflow architect. An execution plan is provided below (already brainstormed
+_BRAINSTORM_PROMPT = """You are a workflow architect. An execution plan is provided below (already brainstormed
 and structured). Design a DAG execution plan from it.
 Think step by step, making all decisions autonomously.
 
@@ -1755,29 +1571,6 @@ what it reads as input, and what it produces as output.
 
 Task: """
 
-_BRAINSTORM_PROMPT_ZH = """你是工作流架构师。下面提供了一份执行计划（已经过头脑风暴和结构化）。
-基于它设计DAG执行计划。逐步思考，所有决策自主完成。
-
-1. 分解: 将执行计划拆分为适合DAG执行的具体子任务。
-2. 分类每个子任务:
-   - claude（AI推理/分析/编码）还是shell（确定性命令）？
-   - 角色: context（收集信息）、produce（创建产物）、gate（验证）、meta（报告）？
-3. 依赖关系: 哪些子任务需要其他子任务的输出？精确判断——只在子任务B确实
-   需要读取子任务A的输出时才添加依赖。
-4. 并行度: 哪些子任务是独立的？最大化并发执行。
-5. 验证门: 每个实现/编码子任务之后，添加shell验证步骤（test/build/lint）
-   作为gate。Gate失败阻断所有下游工作。
-6. 资源估算: 每个claude子任务默认max_runs 0（无限制，完成信号驱动）。
-   仅在需要控制成本时设置max_runs或timeout:
-   - 轻量（阅读/总结）: max_runs 3
-   - 中等（分析/规划）: max_runs 8
-   - 重型（实现/编码）: 通常不限制
-
-输出结构化的设计文档。具体说明每个子任务做什么、读取什么输入、产出什么输出。
-
-任务: """
-
-_BRAINSTORM_PROMPT = _p(_BRAINSTORM_PROMPT_EN, _BRAINSTORM_PROMPT_ZH)
 
 
 def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
@@ -1795,7 +1588,7 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     return proc.stdout.strip()
 
 
-_MATURE_PROMPT_EN = """You are a product design thinker. Turn a raw idea into a fully formed design spec.
+_MATURE_PROMPT = """You are a product design thinker. Turn a raw idea into a fully formed design spec.
 Make ALL decisions autonomously — do not ask questions, do not wait for input.
 
 Anti-pattern: "This is too simple to need a design." Every project gets a design. "Simple" projects are where unexamined assumptions cause the most wasted work.
@@ -1846,59 +1639,8 @@ Output a design document. Be specific and actionable, not vague. No code — jus
 
 Idea: """
 
-_MATURE_PROMPT_ZH = """你是产品设计思考者。将原始想法转化为完整的设计规格。
-所有决策自主完成——不要提问，不要等待输入。
 
-反模式: "这太简单了不需要设计。" 每个项目都要有设计。"简单"项目恰恰是未经审视的假设造成最多浪费的地方。
-
-流程（一次性执行所有步骤）:
-
-1. 探索上下文: 模拟检查项目状态——可能存在哪些文件、文档、现有模式和约束？当前状态如何？
-
-2. 范围检查: 需求是否描述了多个独立子系统？如果是，先分解为子项目。每个子项目单独设计。不要在需要分解的东西上花时间打磨细节。
-
-3. 理解目的: 用户想达成什么？解决什么问题？约束和成功标准是什么？聚焦目的，不仅仅是机制。
-
-4. 探索方案: 提出2-3种不同方案及其trade-off。以推荐方案领衔并解释理由。不要只列举——推理哪个最好以及为什么。
-
-5. 呈现设计: 覆盖以下方面，每个方面的篇幅与其复杂度成正比
-   （直观的用几句话，有深度的用200-300字）:
-   - 架构: 整体结构和关键组件
-   - 组件: 每个部件做什么，它们如何组合
-   - 数据流: 信息如何在系统中流动
-   - 错误处理: 什么可能出错，如何应对
-   - 测试: 如何验证正确性
-
-6. 为隔离性和清晰性而设计:
-   - 拆分为更小的单元，每个有单一明确目的
-   - 每个单元通过定义良好的接口通信
-   - 每个单元可以独立理解和测试
-   - 对每个单元: 它做什么，怎么用它，它依赖什么？
-   - 检验: 不读内部实现能否理解一个单元做什么？修改内部实现会不会破坏使用者？
-     如果不能，边界需要重新设计。
-   - 更小、边界清晰的单元更容易推理——你对能一次看完的代码思考得更好，
-     对聚焦的文件编辑更可靠。当文件变大时，这通常是它做太多事情的信号。
-
-7. 现有代码库意识:
-   - 遵循现有模式。不要提议无关的重构。
-   - 当现有代码的问题影响到当前工作（文件过大、边界不清、职责纠缠），将针对性的改进纳入设计——就像一个好开发者在工作中顺手改善代码。
-
-8. 严格执行YAGNI: 移除每一个非严格必要的功能。少量功能做好胜过大量功能做差。
-
-输出前，对设计进行自检（发现问题直接修正，不要单独输出检查结果）:
-- 完整性: 无TODO、占位符、"待定"
-- 一致性: 无内部矛盾或冲突需求
-- 清晰度: 无歧义到可能导致构建错误东西的需求
-- 范围: 聚焦到可以用单份实施计划覆盖，不涉及无关子系统
-- YAGNI: 无未被要求的功能或过度工程
-
-输出设计文档。具体、可执行，不含糊。不要代码——只要设计。
-
-想法: """
-
-_MATURE_PROMPT = _p(_MATURE_PROMPT_EN, _MATURE_PROMPT_ZH)
-
-_PLAN_DOC_PROMPT_EN = """You are a technical planner. Turn a design spec into a structured implementation plan.
+_PLAN_DOC_PROMPT = """You are a technical planner. Turn a design spec into a structured implementation plan.
 Make ALL decisions autonomously — do not ask questions.
 
 Assume the engineer executing this plan has zero context for the codebase and questionable taste. Document everything they need: which files to touch, how to test, what docs to check. Give them the whole plan as bite-sized tasks.
@@ -1948,55 +1690,6 @@ Output a structured plan document with key interface signatures and logic for ea
 
 Design: """
 
-_PLAN_DOC_PROMPT_ZH = """你是技术规划师。将设计规格转化为结构化的实施计划。
-所有决策自主完成——不要提问。
-
-假设执行此计划的工程师对代码库零上下文且品味存疑。记录他们需要的一切: 动哪些文件、怎么测试、查什么文档。将完整计划拆解为小粒度任务。
-
-流程:
-
-1. 范围检查: 如果设计涵盖了多个未分解的独立子系统，拆成独立计划——每个子系统一份。每份计划应能独立产出可工作、可测试的软件。
-
-2. 文件结构: 在定义任务之前，先列出要创建/修改的文件及其职责。这是分解决策被锁定的地方。
-   - 设计清晰边界和定义良好的接口
-   - 每个文件单一职责。优先选择小而聚焦的文件而非大而全的文件
-   - 一起变更的文件应该放在一起。按职责拆分，不按技术层拆分
-   - 在现有代码库中遵循既有模式。如果某文件已经臃肿，计划中包含拆分是合理的
-
-3. 任务分解: 有序的具体任务列表。小粒度——每步一个动作（2-5分钟，不是一小时）。
-   每个任务:
-   - 构建什么（具体，不是"添加校验"）
-   - 创建/修改哪些文件（精确路径）
-   - 如何验证（精确的测试命令和预期输出）
-   - 提交什么以及commit message
-   - 包含关键接口签名和核心逻辑——不是"添加校验"而是实际的函数签名和校验内容
-
-   每个任务的TDD循环（这就是粒度的定义）:
-     步骤1: 写失败的测试
-     步骤2: 运行确认测试失败
-     步骤3: 写最小代码让测试通过
-     步骤4: 运行确认测试通过
-     步骤5: 提交
-
-4. 依赖顺序: 哪些任务必须先完成？哪些可以并行？明确说明。
-
-5. 风险点: 最可能出问题的地方。需要注意什么。
-
-原则: DRY. YAGNI. TDD（先写失败测试，再实现）。频繁提交。
-更小、边界清晰的单元更容易推理——你对能一次看完的代码思考得更好，
-对聚焦的文件编辑更可靠。
-
-输出前，对计划进行自检（发现问题直接修正，不要单独输出检查结果）:
-- 完整性: 无TODO、占位符、不完整的任务
-- 规格对齐: 计划覆盖所有设计需求，无重大范围蔓延
-- 任务分解: 任务边界清晰，步骤可执行
-- 可构建性: 工程师能否按此计划执行而不卡住？
-
-输出结构化计划文档，包含每个任务的关键接口签名和逻辑。
-
-设计: """
-
-_PLAN_DOC_PROMPT = _p(_PLAN_DOC_PROMPT_EN, _PLAN_DOC_PROMPT_ZH)
 
 
 def generate_plan(description: str) -> tuple[str, str]:
