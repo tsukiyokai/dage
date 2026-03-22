@@ -1701,19 +1701,13 @@ Output a structured work stream document.
 
 Design: """
 
-_SKIP_MATURE_THRESHOLD = 2000  # chars: inputs above this are already a design doc
-
 def generate_plan(description: str) -> tuple[str, str]:
-    """Multi-phase plan generation: [mature] → work streams → DAG design → YAML."""
+    """Four-phase plan generation: mature → work streams → DAG design → YAML."""
 
-    # phase 1: skip if input is already a substantial design document
-    if len(description) > _SKIP_MATURE_THRESHOLD:
-        _log(f"  phase 1: skipped (input {len(description)} chars, already a design doc)")
-        mature = description
-    else:
-        _log("  phase 1: maturing idea...")
-        mature = _call_claude(_MATURE_PROMPT + description, timeout=600)
-        _log(f"  design: {len(mature)} chars")
+    # phase 1: mature the raw idea into a well-scoped design
+    _log("  phase 1/4: maturing idea...")
+    mature = _call_claude(_MATURE_PROMPT + description, timeout=600)
+    _log(f"  design: {len(mature)} chars")
 
     # phase 2: decompose design into independent work streams + verification boundaries
     _log("  phase 2/4: decomposing work streams...")
