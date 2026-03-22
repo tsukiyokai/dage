@@ -1807,39 +1807,94 @@ def _call_claude(prompt: str, timeout: int = 120, system: str = "") -> str:
     return proc.stdout.strip()
 
 
+_MATURE_PROMPT_EN = """\
+You are a product thinker. Mature a raw idea into a well-defined project scope.
+Make ALL decisions autonomously — do not ask questions, do not wait for input.
+
+1. UNDERSTAND: What is the user trying to achieve? What problem does this solve?
+2. SCOPE: Define clear boundaries — what's in, what's out. Apply YAGNI ruthlessly.
+3. APPROACHES: Consider 2-3 approaches, pick the best one, explain why.
+4. CONSTRAINTS: Identify technical constraints, dependencies, risks.
+5. SUCCESS CRITERIA: What does "done" look like? How do you verify it works?
+
+Output a concise design document (not code). Be specific and actionable.
+
+Idea: """
+
+_MATURE_PROMPT_ZH = """\
+你是产品思考者。将原始想法打磨成定义清晰的项目范围。
+所有决策自主完成——不要提问，不要等待输入。
+
+1. 理解: 用户想达成什么？解决什么问题？
+2. 范围: 明确边界——做什么、不做什么。严格YAGNI。
+3. 方案: 考虑2-3种方案，选最优，说明理由。
+4. 约束: 识别技术约束、依赖、风险。
+5. 验收标准: "完成"长什么样？如何验证？
+
+输出简洁的设计文档（不是代码）。具体、可执行。
+
+想法: """
+
+_MATURE_PROMPT = _p(_MATURE_PROMPT_EN, _MATURE_PROMPT_ZH)
+
+_PLAN_DOC_PROMPT_EN = """\
+You are a technical planner. Turn a design into a structured execution plan.
+Make ALL decisions autonomously — do not ask questions.
+
+Given the design below, produce an implementation plan with:
+1. FILE STRUCTURE: Which files to create/modify, one responsibility per file.
+2. TASK BREAKDOWN: Ordered list of concrete tasks. Each task:
+   - What to build (specific, not vague)
+   - Which files to touch
+   - How to verify it works (test command or check)
+3. DEPENDENCY ORDER: Which tasks must complete before others can start.
+4. RISK AREAS: Where things are most likely to go wrong.
+
+Keep it concise. No code snippets — just clear descriptions of what each task does.
+
+Design: """
+
+_PLAN_DOC_PROMPT_ZH = """\
+你是技术规划师。将设计转化为结构化的执行计划。
+所有决策自主完成——不要提问。
+
+基于下方设计，产出实施计划:
+1. 文件结构: 创建/修改哪些文件，每个文件单一职责。
+2. 任务分解: 有序的具体任务列表。每个任务:
+   - 构建什么（具体，不含糊）
+   - 涉及哪些文件
+   - 如何验证（测试命令或检查方式）
+3. 依赖顺序: 哪些任务必须先完成。
+4. 风险点: 最可能出问题的地方。
+
+简洁。不要代码片段——只要清晰描述每个任务做什么。
+
+设计: """
+
+_PLAN_DOC_PROMPT = _p(_PLAN_DOC_PROMPT_EN, _PLAN_DOC_PROMPT_ZH)
+
+
 def generate_plan(description: str) -> tuple[str, str]:
-    """Four-phase plan generation: brainstorm → writing-plan → DAG design → YAML."""
-    bs_skill = _load_skills(["brainstorming"])
-    wp_skill = _load_skills(["writing-plans"])
+    """Four-phase plan generation: mature idea → execution plan → DAG design → YAML."""
 
-    # phase 1: brainstorm — mature the raw idea
-    if bs_skill:
-        _log("  phase 1/4: brainstorming idea...")
-        mature = _call_claude(description, timeout=180, system=bs_skill)
-        _log(f"  brainstorm: {len(mature)} chars")
-    else:
-        _log("  phase 1/4: brainstorming skill not found, skipping")
-        mature = description
+    # phase 1: mature the raw idea into a well-scoped design
+    _log("  phase 1/4: maturing idea...")
+    mature = _call_claude(_MATURE_PROMPT + description, timeout=300)
+    _log(f"  design: {len(mature)} chars")
 
-    # phase 2: writing-plans — turn mature idea into executable plan
-    if wp_skill:
-        _log("  phase 2/4: writing execution plan...")
-        plan = _call_claude(
-            f"{mature}\n\nOriginal task:\n{description}",
-            timeout=240, system=wp_skill)
-        _log(f"  plan: {len(plan)} chars")
-    else:
-        _log("  phase 2/4: writing-plans skill not found, skipping")
-        plan = mature
+    # phase 2: turn design into structured execution plan
+    _log("  phase 2/4: writing execution plan...")
+    plan = _call_claude(_PLAN_DOC_PROMPT + mature, timeout=300)
+    _log(f"  plan: {len(plan)} chars")
 
-    # phase 3: DAG design — decompose plan into subtasks with deps/gates
+    # phase 3: decompose plan into DAG subtasks with deps/gates
     _log("  phase 3/4: designing DAG...")
     design = _call_claude(
         _BRAINSTORM_PROMPT + f"\n\nExecution plan:\n{plan}",
-        timeout=180)
-    _log(f"  design: {len(design)} chars")
+        timeout=300)
+    _log(f"  dag: {len(design)} chars")
 
-    # phase 4: YAML generation
+    # phase 4: generate YAML
     _log("  phase 4/4: generating YAML...")
     gen_prompt = _PLAN_PROMPT + (
         f"\nDesign document:\n{design}\n\n"
