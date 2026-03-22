@@ -1730,17 +1730,12 @@ def generate_plan(description: str, skills: list[str] = None) -> tuple[str, str]
     return _extract_yaml(raw), design
 
 def _extract_yaml(text: str) -> str:
-    text = text.strip()
-    # strip code fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    # strip leading non-YAML content (markdown, insights, etc.)
-    # YAML starts with a line that's a key (word + colon) or a comment (#) or ---
-    lines = text.split("\n")
+    # try to extract from code fence first (handles ```yaml ... ``` anywhere in text)
+    m = re.search(r'```(?:ya?ml)?\s*\n(.+?)```', text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # no fence: strip leading/trailing non-YAML lines
+    lines = text.strip().split("\n")
     start = 0
     for i, line in enumerate(lines):
         s = line.strip()
@@ -1749,13 +1744,12 @@ def _extract_yaml(text: str) -> str:
         if s.startswith("#") or s.startswith("---") or (":" in s and not s.startswith("`")):
             start = i
             break
-    # strip trailing non-YAML content
     end = len(lines)
     for i in range(len(lines) - 1, start - 1, -1):
         s = lines[i].strip()
         if not s:
             continue
-        if s.startswith("`") or s.startswith("*") or s.startswith("|"):
+        if s.startswith("`") or s.startswith("*"):
             end = i
         else:
             break
