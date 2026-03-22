@@ -1853,6 +1853,14 @@ Process (execute all steps in one pass):
 8. APPLY YAGNI RUTHLESSLY: Remove every feature that isn't strictly necessary. \
    Fewer features done well beats many features done poorly.
 
+Before outputting, self-review your design against these criteria (fix issues inline, \
+do not output the review separately):
+- Completeness: no TODOs, placeholders, or "TBD" sections
+- Consistency: no internal contradictions or conflicting requirements
+- Clarity: no requirement ambiguous enough to cause building the wrong thing
+- Scope: focused enough for a single implementation plan, not covering unrelated subsystems
+- YAGNI: no unrequested features or over-engineering
+
 Output a design document. Be specific and actionable, not vague. No code — just design.
 
 Idea: """
@@ -1900,6 +1908,13 @@ _MATURE_PROMPT_ZH = """\
 8. 严格执行YAGNI: 移除每一个非严格必要的功能。\
    少量功能做好胜过大量功能做差。
 
+输出前，对设计进行自检（发现问题直接修正，不要单独输出检查结果）:
+- 完整性: 无TODO、占位符、"待定"
+- 一致性: 无内部矛盾或冲突需求
+- 清晰度: 无歧义到可能导致构建错误东西的需求
+- 范围: 聚焦到可以用单份实施计划覆盖，不涉及无关子系统
+- YAGNI: 无未被要求的功能或过度工程
+
 输出设计文档。具体、可执行，不含糊。不要代码——只要设计。
 
 想法: """
@@ -1942,6 +1957,13 @@ Process:
 
 Principles: DRY. YAGNI. TDD (write failing test first, then implement). Frequent commits.
 
+Before outputting, self-review your plan against these criteria (fix issues inline, \
+do not output the review separately):
+- Completeness: no TODOs, placeholders, or incomplete tasks
+- Spec alignment: plan covers all design requirements, no major scope creep
+- Task decomposition: tasks have clear boundaries, steps are actionable
+- Buildability: could an engineer follow this plan without getting stuck?
+
 Output a structured plan document. No code snippets — clear descriptions of what each task does.
 
 Design: """
@@ -1978,6 +2000,12 @@ _PLAN_DOC_PROMPT_ZH = """\
 5. 风险点: 最可能出问题的地方。需要注意什么。
 
 原则: DRY. YAGNI. TDD（先写失败测试，再实现）。频繁提交。
+
+输出前，对计划进行自检（发现问题直接修正，不要单独输出检查结果）:
+- 完整性: 无TODO、占位符、不完整的任务
+- 规格对齐: 计划覆盖所有设计需求，无重大范围蔓延
+- 任务分解: 任务边界清晰，步骤可执行
+- 可构建性: 工程师能否按此计划执行而不卡住？
 
 输出结构化计划文档。不要代码片段——清晰描述每个任务做什么。
 
