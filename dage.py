@@ -1731,13 +1731,35 @@ def generate_plan(description: str, skills: list[str] = None) -> tuple[str, str]
 
 def _extract_yaml(text: str) -> str:
     text = text.strip()
+    # strip code fences
     if text.startswith("```"):
         lines = text.split("\n")
         lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-    return text
+    # strip leading non-YAML content (markdown, insights, etc.)
+    # YAML starts with a line that's a key (word + colon) or a comment (#) or ---
+    lines = text.split("\n")
+    start = 0
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#") or s.startswith("---") or (":" in s and not s.startswith("`")):
+            start = i
+            break
+    # strip trailing non-YAML content
+    end = len(lines)
+    for i in range(len(lines) - 1, start - 1, -1):
+        s = lines[i].strip()
+        if not s:
+            continue
+        if s.startswith("`") or s.startswith("*") or s.startswith("|"):
+            end = i
+        else:
+            break
+    return "\n".join(lines[start:end]).strip()
 
 # ==== CLI
 
@@ -1854,6 +1876,11 @@ def main():
         _log(f"wrote {out}")
 
         if args.run:
+            try:
+                yaml.safe_load(Path(out).read_text())
+            except Exception as e:
+                _log(f"error: generated YAML is invalid, cannot --run: {e}")
+                sys.exit(1)
             _log("")
             wf = load_workflow(out)
             wf["_yaml_path"] = os.path.abspath(out)
