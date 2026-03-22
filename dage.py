@@ -1543,6 +1543,8 @@ DAG structure. The work streams below are already decomposed — your job is to 
 them into dage's node/role/dependency model, not to re-decompose.
 Make all decisions autonomously.
 
+""" + _DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}") + """
+
 For each work stream, decide:
 
 1. NODE MAPPING: One work stream typically becomes:
