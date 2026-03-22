@@ -273,6 +273,7 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
     env["CCX_MANAGED"] = "1"
     proc = subprocess.Popen(
         cmd, shell=shell, cwd=cwd, env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     with _active_procs_lock:
