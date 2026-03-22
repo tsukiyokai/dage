@@ -1578,7 +1578,7 @@ Work streams: """
 
 def _call_claude(prompt: str, timeout: int = 1800, system: str = "") -> str:
     cmd = ["claude", "-p", prompt, "--output-format", "text",
-           "--allowedTools", "*",
+           "--permission-mode", "bypassPermissions",
            "--add-dir", os.path.expanduser("~/.claude/skills")]
     if system:
         cmd += ["--append-system-prompt", system]
