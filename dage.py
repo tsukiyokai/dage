@@ -82,18 +82,26 @@ def load_workflow(path: str) -> dict:
         raise ValueError("invalid workflow: 'nodes' key required")
     return wf
 
+# bounded roles: auto-cap max_runs to prevent goal drift
+_ROLE_MAX_RUNS = {Role.CONTEXT: 1, Role.META: 1}
+
 def _build_one_node(name: str, spec: dict, defaults: dict) -> Node:
     if not isinstance(spec, dict):
         raise ValueError(f"node '{name}': spec must be a mapping")
+    role     = Role(spec.get("role", "produce"))
+    max_runs = spec.get("max_runs", defaults.get("max_runs", 0))
+    # bounded roles auto-cap if not explicitly set
+    if max_runs == 0 and role in _ROLE_MAX_RUNS:
+        max_runs = _ROLE_MAX_RUNS[role]
     return Node(
         name      = name,
         type      = NodeType(spec.get("type", defaults.get("type", "claude"))),
-        role      = Role(spec.get("role", "produce")),
+        role      = role,
         deps      = spec.get("deps", []),
         prompt    = spec.get("prompt", ""),
         cmd       = spec.get("cmd", ""),
         condition = spec.get("condition", ""),
-        max_runs  = spec.get("max_runs", defaults.get("max_runs", 0)),
+        max_runs  = max_runs,
         worktree  = spec.get("worktree", ""),
         timeout   = spec.get("timeout", defaults.get("timeout", "")),
         retry     = spec.get("retry", 0),
