@@ -1704,22 +1704,28 @@ Output a structured work stream document.
 
 Design: """
 
-def generate_plan(description: str) -> tuple[str, str]:
+def generate_plan(description: str, skills: list[str] = None) -> tuple[str, str]:
     """Four-phase plan generation: mature → work streams → DAG design → YAML."""
+    skill_ctx = _load_skills(skills) if skills else ""
+    if skill_ctx:
+        _log(f"  skills: {skills}")
 
     # phase 1: mature the raw idea into a well-scoped design
     _log("  phase 1/4: maturing idea...")
-    mature = _call_claude(_MATURE_PROMPT + description, timeout=1800)
+    mature = _call_claude(_MATURE_PROMPT + description,
+                          timeout=1800, system=skill_ctx)
     _log(f"  design: {len(mature)} chars")
 
     # phase 2: decompose design into independent work streams + verification boundaries
     _log("  phase 2/4: decomposing work streams...")
-    streams = _call_claude(_PLAN_DOC_PROMPT + mature, timeout=1800)
+    streams = _call_claude(_PLAN_DOC_PROMPT + mature,
+                           timeout=1800, system=skill_ctx)
     _log(f"  streams: {len(streams)} chars")
 
     # phase 3: map work streams to dage DAG structure (nodes/roles/deps/gates)
     _log("  phase 3/4: mapping to DAG...")
-    design = _call_claude(_BRAINSTORM_PROMPT + streams, timeout=1800)
+    design = _call_claude(_BRAINSTORM_PROMPT + streams,
+                          timeout=1800, system=skill_ctx)
     _log(f"  dag: {len(design)} chars")
 
     # phase 4: generate YAML
@@ -1728,7 +1734,7 @@ def generate_plan(description: str) -> tuple[str, str]:
         f"\nDesign document:\n{design}\n\n"
         f"Original task: {description}"
     )
-    raw = _call_claude(gen_prompt, timeout=1800)
+    raw = _call_claude(gen_prompt, timeout=1800, system=skill_ctx)
     return _extract_yaml(raw), design
 
 def _extract_yaml(text: str) -> str:
@@ -1772,6 +1778,8 @@ def main():
                         help="output file (default: .dage/workflows/<timestamp>.yaml)")
     p_plan.add_argument("--run", action="store_true",
                         help="generate then immediately execute")
+    p_plan.add_argument("--skills", nargs="+", default=[],
+                        help="inject skill knowledge into plan phases")
 
     args = parser.parse_args()
 
@@ -1820,7 +1828,7 @@ def main():
             _log(f"loaded idea from: {args.description}")
         _log("generating workflow...")
         try:
-            raw, design = generate_plan(desc)
+            raw, design = generate_plan(desc, skills=args.skills)
         except RuntimeError as e:
             _log(f"error: {e}")
             sys.exit(1)
