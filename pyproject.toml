@@ -1,0 +1,16 @@
+[build-system]
+requires      = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name    = "dage"
+version = "0.1.0"
+description = "DAG-based Agent Workflow Orchestrator"
+requires-python = ">=3.10"
+dependencies = ["pyyaml"]
+
+[project.optional-dependencies]
+tui = ["rich"]
+
+[project.scripts]
+dage = "dage.cli:main"
