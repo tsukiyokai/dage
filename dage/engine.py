@@ -4,6 +4,7 @@ import glob as _glob
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 import time
@@ -49,6 +50,32 @@ def build_context(wf: dict, results: dict[str, NodeResult], run_id: str) -> dict
         "run":   {"id": run_id, "summary": _build_summary(results),
                   "default_branch": _detect_default_branch()},
     }
+
+def _surface_outputs_from_worktree(node: Node, wt_name: str,
+                                    repo_dir: str) -> list[str]:
+    """Copy declared outputs from worktree to main repo before git merge.
+
+    This ensures output files survive even if git merge aborts due to
+    conflicts on shared files (e.g. SHARED_TASK_NOTES.md).
+    """
+    from dage.git_ops import worktree_path
+    wt_path = worktree_path(repo_dir, wt_name)
+    if not os.path.isdir(wt_path):
+        return []
+    surfaced: list[str] = []
+    for pattern in node.outputs:
+        for src in sorted(_glob.glob(os.path.join(wt_path, pattern),
+                                      recursive=True)):
+            if not os.path.isfile(src):
+                continue
+            rel = os.path.relpath(src, wt_path)
+            dst = os.path.join(repo_dir, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            surfaced.append(rel)
+    if surfaced:
+        log(f"  surface: {node.name} -> {len(surfaced)} files")
+    return surfaced
 
 def _collect_artifacts(node: Node, repo_dir: str) -> list[dict]:
     """Resolve output glob patterns and collect file metadata."""
@@ -127,14 +154,34 @@ def _autofix_gate(gate: Node, gate_result: NodeResult,
                   repo_dir: str) -> NodeResult | None:
     """Spawn a temporary claude node to diagnose & fix a failed gate, then retry."""
     upstream = "\n".join(
-        f"Upstream '{d}' goal:\n{nodes[d].prompt[:500]}"
+        f"Upstream '{d}' goal:\n{nodes[d].prompt[:2000]}"
         for d in gate.deps if d in nodes and nodes[d].prompt
     )
     resolved_cmd = interpolate(gate.cmd, ctx)
+
+    # build file status from declared outputs
+    file_parts: list[str] = []
+    for d in gate.deps:
+        if d not in nodes or not nodes[d].outputs:
+            continue
+        found_any = False
+        for pattern in nodes[d].outputs:
+            for path in sorted(_glob.glob(os.path.join(repo_dir, pattern),
+                                          recursive=True)):
+                if os.path.isfile(path):
+                    rel = os.path.relpath(path, repo_dir)
+                    size = os.path.getsize(path)
+                    file_parts.append(f"  {rel} ({size}B)")
+                    found_any = True
+        if not found_any:
+            file_parts.append(f"  {d}: {nodes[d].outputs} (none found)")
+    file_status = "\n".join(file_parts) if file_parts else "(no outputs declared)"
+
     prompt = AUTOFIX_PROMPT.format(
         cmd              = resolved_cmd,
         error_output     = gate_result.output[-3000:],
         upstream_context = f"\n{upstream}" if upstream else "",
+        file_status      = file_status,
     )
 
     fix_name = f"_autofix_{gate.name}"
@@ -424,7 +471,14 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                             name, nodes, results, blocked,
                             wf, run_dir, cfg, replan_count)
 
-                # phase 2.5: merge worktree changes back to main
+                # phase 2.5a: surface declared outputs (before merge, survives conflict)
+                if auto_wt:
+                    for n in to_run:
+                        wt = auto_wt.get(n)
+                        if wt and nodes[n].outputs:
+                            _surface_outputs_from_worktree(nodes[n], wt, repo_dir)
+
+                # phase 2.5b: merge worktree changes back to main
                 if auto_wt:
                     merge_worktrees(auto_wt, repo_dir, run_id)
 

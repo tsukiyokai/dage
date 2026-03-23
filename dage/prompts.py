@@ -34,10 +34,15 @@ Gate command:
 Error output:
 {error_output}
 {upstream_context}
+Existing output files:
+{file_status}
+
 Instructions:
 1. Read the error carefully, identify root cause
-2. Fix it (install tools, fix code, etc.)
-3. Run the gate command yourself to verify
+2. Check if upstream nodes already produced expected files (possibly in wrong location or format)
+3. If files exist but have issues (wrong format, missing content), fix in place
+4. Only regenerate files from scratch as last resort
+5. Run the gate command yourself to verify
 """
 
 # ==== DAGE_KNOWLEDGE must precede PLAN_PROMPT / BRAINSTORM_PROMPT (they reference it)
