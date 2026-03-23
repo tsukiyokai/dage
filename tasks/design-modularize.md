@@ -1,353 +1,478 @@
-# dage.py Modularization Design
+# dage.py Modularization Design (v2)
 
 ## Purpose
 
-将1898行的单体 `dage.py` 拆分为职责清晰的模块包，使每个文件可独立阅读、测试和修改。
-拆分后保持完全相同的功能和CLI行为，不引入新特性。
+将1952行单体dage.py拆为`dage/`包(12个文件，平均~170行/模块)。沿代码中已有的section分隔切割，每个模块职责一句话说清。不引入新功能，CLI行为完全不变。
 
 ## Approach Selection
 
 ### A. Package with focused modules (recommended)
 
-12个文件（含`__init__`/`__main__`），平均~175行/模块。
-沿代码中已有的逻辑边界切割，依赖单向流动。
+12个文件，依赖单向无环。沿代码的`# ====`分隔线切割。每个模块一屏读完。
 
-Trade-off: 文件数量中等，但每个模块都能在一屏内读完，职责无歧义。
+Trade-off: 文件数量中等，但每个文件的边界不需要发明，代码中已经画好了。
 
 ### B. Fewer, larger modules (6 files)
 
-将 executor+engine+git+replan 合并为一个~800行的 `core.py`。
-Trade-off: 文件更少，但 core.py 会重新变成"什么都往里塞"的杂物间。
+将executor+engine+git_ops+replan合并为core.py(~800行)。文件更少，但core.py会重新变成杂物间，违背了拆分的初衷。
 
 ### C. Feature-oriented (6 files)
 
-按功能域分（dag、runners、ai、ui），每个模块混合数据和逻辑。
-Trade-off: 直觉上好找，但模块内聚性差，修改时容易牵连无关代码。
+按功能域(dag/runners/ai/ui)分组。每个模块混合数据和逻辑，修改时容易牵连无关代码。
 
-选择A。原因：dage.py内部已经有清晰的section分隔（数据结构 / YAML加载 / 调度 / 执行 / git / replan / 引擎 / TUI / prompt / plan / CLI），沿这些边界切割是阻力最小的路径，每个模块的职责用一句话就能说清。
+选择A。理由: 代码中已有15个`# ====`section，这些就是天然的模块边界。沿这些边界切割是阻力最小、正确性最高的路径。
 
 ## Architecture
 
 ### Directory Layout
 
 ```
-dage/                      # Python package
-├── __init__.py            #  ~20 lines   version + public exports
-├── __main__.py            #  ~5  lines   python -m dage entry
-├── models.py              #  ~90 lines   enums, dataclasses, constants
-├── workflow.py            # ~160 lines   YAML load/build/validate, interpolate, scheduling
-├── executor.py            # ~290 lines   process mgmt, shell/claude runners, skills
-├── git_ops.py             # ~165 lines   worktree merge/prune, auto-commit
-├── replan.py              # ~330 lines   adaptive replanning
-├── engine.py              # ~280 lines   DAG execution loop, gate/resume/persistence
-├── tui.py                 # ~175 lines   rich TUI display
-├── prompts.py             # ~250 lines   all prompt template strings
-├── planner.py             # ~250 lines   AI four-phase plan generation
-└── cli.py                 # ~140 lines   argparse commands, main()
+dage/                         # Python package
+  __init__.py       ~5  lines   version only, no bulk re-export
+  __main__.py       ~5  lines   python -m dage
+  models.py         ~90 lines   enums, dataclasses, data utils
+  prompts.py        ~250 lines  all prompt template strings
+  workflow.py       ~170 lines  YAML load/build/validate, interpolate, scheduling
+  executor.py       ~200 lines  process mgmt, shell/claude runners
+  git_ops.py        ~120 lines  worktree merge/prune, auto-commit
+  replan.py         ~200 lines  adaptive replanning
+  engine.py         ~300 lines  DAG execution loop + gate/resume/state
+  tui.py            ~250 lines  rich TUI + log/log_line + print_*
+  planner.py        ~150 lines  AI four-phase plan generation
+  cli.py            ~160 lines  argparse, main()
 
 (root)
-├── dage.py                # ~5  lines    backward-compat shim (see below)
-├── examples/
-├── tests/
-└── pyproject.toml         # optional, for pip install entry point
+  pyproject.toml               entry point: dage = "dage.cli:main"
+  examples/
+  tests/
+  tasks/
 ```
 
 ### Backward Compatibility
 
-Python不允许同目录下同时存在 `dage.py` 和 `dage/` 作为可导入模块（文件优先于目录）。
-解决方案：保留根目录的 `dage.py` 作为纯shim，内容仅为：
+Python不允许`dage.py`和`dage/`同级共存(file优先于package)。设计决策: 删除根目录`dage.py`，通过pyproject.toml声明entry point。用户通过`pip install -e .`安装后运行`dage`命令，或直接`python -m dage`。这是Python打包的标准做法。
 
-```python
-#!/usr/bin/env python3
-import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
-from dage.cli import main
-main()
+### Dependency Graph
+
+```
+  models     prompts             (no deps, foundation)
+     |          |
+  workflow     |
+     |    \    |
+     tui    \  |                 (tui: owns log, depends on models + workflow)
+     | \     \ |
+  executor ---+                  (imports: models, workflow, prompts, tui.log)
+     |
+  git_ops                        (imports: models, executor, tui.log)
+     |
+  replan                         (imports: models, workflow, executor, prompts, tui.log)
+     |
+  planner                        (imports: models, workflow, executor, prompts, tui.log)
+     |
+  engine                         (imports: all above)
+     |
+  cli                            (imports: workflow, engine, planner, tui)
 ```
 
-关键点：shim在 `sys.path` 插入自身目录后，`import dage` 会解析到 `dage/` 包而非shim自身（因为此时Python已经在执行shim，不会重新导入它）。实际上更安全的做法是：将shim命名为不同的文件（如保留原名但内容为纯转发），或确认Python的导入行为。
+Single directional, acyclic. engine is the convergence point. tui is a widely-imported
+leaf dependency (depends only on models + workflow).
 
-更简洁的替代方案：直接删除根目录 `dage.py`，在 `pyproject.toml` 中声明entry point：
+## Module Specifications
 
-```toml
-[project.scripts]
-dage = "dage.cli:main"
-```
+### 1. models.py -- Data Foundation
 
-用户通过 `pip install -e .` 安装后即可直接运行 `dage` 命令。同时 `python -m dage` 通过 `__main__.py` 也始终可用。
+Responsibility: all shared data types and data utility functions. Zero business logic.
 
-设计决策：采用删除shim + pyproject.toml entry point方案。这是Python打包的标准做法，比维护一个容易出问题的shim更可靠。
-
-## Components
-
-### 1. models.py — Data Foundation
-
-职责：定义所有共享数据类型，无业务逻辑。
-
-内容：
+Contents:
 - `Role` enum (CONTEXT, PRODUCE, GATE, EVALUATE, GC, META)
 - `NodeType` enum (CLAUDE, SHELL)
 - `Status` enum (PENDING, RUNNING, SUCCESS, FAILED, SKIPPED)
 - `Node` dataclass (name, type, role, deps, prompt, cmd, condition, max_runs, worktree, timeout, retry, adaptive, skills)
-- `NodeResult` dataclass (status, output, duration, retries, cost)
-- Constants: `_ROLE_MAX_RUNS`, `_ANSI_COLORS`, `_SKILL_SEARCH_PATHS`
+- `NodeResult` dataclass (status, output, duration, retries, cost) + `to_dict()` method
+- `_ROLE_MAX_RUNS` dict -- Role semantic constant, used by workflow._build_one_node
+- `node_to_dict(node)` -- Node serialization (current L1229-1238)
+- `save_json(path, data)` -- JSON write utility (current L1225-1227), shared by engine and replan
 
-依赖：无（纯标准库）。
+NOT in models.py:
+- `_ANSI_COLORS` -> tui.py (pure display constant)
+- `_SKILL_SEARCH_PATHS` -> executor.py (only used by _load_skills)
 
-### 2. workflow.py — DAG Definition Layer
+Dependencies: none (pure stdlib).
 
-职责：YAML加载、节点构建、DAG验证、变量插值、拓扑排序和调度。
+### 2. prompts.py -- Prompt Templates
 
-内容：
-- `load_workflow(path)` — YAML文件加载
-- `_build_one_node(name, spec, defaults)` — 单节点构建 + max_runs auto-cap
-- `build_nodes(workflow)` — 批量构建
-- `validate_workflow(nodes)` — 依赖检查 + 环路检测
-- `_resolve_path(path, context)` — 点号路径解析 `${nodes.X.output}`
-- `interpolate(template, context)` — 模板渲染
-- `topo_layers(nodes)` — 分层拓扑排序
-- `next_runnable(nodes, results, blocked)` — 动态可执行节点计算
-- `find_blocked(nodes, results, gate_name)` — gate失败后下游传播
-- `_extract_yaml(text)` — 从AI输出中提取YAML（被planner和replan共用）
+Responsibility: all AI prompt template strings. Pure data, no logic.
 
-模块级可变状态：`_max_output`（workflow级output截断上限）。
-通过 `set_max_output(n)` 函数设置，避免直接暴露全局变量。
+Contents (all module-level constants, strip leading underscore):
+- `META_STYLE` -- cat-girl + brat style (current L491)
+- `DAGE_KNOWLEDGE` -- dage framework knowledge (current L706-742)
+- `ANNOTATE_PROMPT` -- design doc annotation (current L437)
+- `AUTOFIX_PROMPT` -- gate failure fix (current L639)
+- `REPLAN_PROMPT` -- adaptive replan (current L744), template references `{dage_knowledge}`
+- `PLAN_PROMPT` -- Phase 4 YAML generation (current L1492), concatenates DAGE_KNOWLEDGE
+- `BRAINSTORM_PROMPT` -- Phase 3 DAG mapping (current L1550), concatenates DAGE_KNOWLEDGE
+- `MATURE_PROMPT` -- Phase 1 design maturation (current L1611)
+- `PLAN_DOC_PROMPT` -- Phase 2 workflow decomposition (current L1662)
 
-依赖：models
+`{{`/`}}` escaping in `_DAGE_KNOWLEDGE` is handled at format() call sites.
 
-### 3. executor.py — Process Execution
+Dependencies: none.
 
-职责：管理子进程生命周期，执行shell和claude节点。
+### 3. workflow.py -- DAG Definition Layer
 
-内容：
-- `_active_procs` / `_active_procs_lock` — 进程追踪（模块级状态）
-- `kill_active_procs()` — SIGTERM处理器调用
-- `_run_streamed(name, cmd, shell, cwd, timeout)` — 核心流式执行器
-- `_load_skills(skill_names)` — 技能文件加载
-- `run_shell(node, run_dir, cwd)` — shell节点执行
-- `run_claude(node, run_dir, cwd, ...)` — ccx执行（构建命令、读取notes）
-- `execute_node(node, run_dir, cwd, context, ...)` — 带重试的执行包装
-- `call_claude(prompt, timeout)` — 单次claude CLI调用（plan/replan/autofix共用）
-- `_parse_duration(s)` — 时间字符串解析
+Responsibility: YAML loading, node building, DAG validation, variable interpolation, topo sort, scheduling.
 
-依赖：models, workflow (interpolate), prompts (_META_STYLE)
+Contents:
+- `load_workflow(path)` -- YAML file loading (L86)
+- `_build_one_node(name, spec, defaults)` -- single node build + max_runs auto-cap (L96)
+- `build_nodes(wf)` -- batch build (L120)
+- `validate_workflow(nodes)` -- dependency check + cycle detection (L125)
+- `_resolve_path(ctx, path)` -- dot-path resolution (L148)
+- `interpolate(template, ctx)` -- `${...}` template rendering (L169)
+- `topo_layers(nodes)` -- layered topo sort (L188)
+- `next_runnable(nodes, results, blocked)` -- dynamic scheduling (L203)
+- `find_blocked(nodes, failed_gate)` -- gate failure downstream propagation (L220)
+- `extract_yaml(text)` -- extract YAML text from AI output (current `_extract_yaml` L1759)
+  - CRITICAL FIX: remove `nodes` key hard-validation. Only do text extraction + YAML parse
+    validity check. Semantic key validation is the caller's responsibility.
+    Reason: replan YAML schema is `{justification, remove, add}`, no `nodes` key.
+    Current code (commit 9f6903e) has `nodes` validation that would break replan.
 
-### 4. git_ops.py — Git Operations
+Module-level state: `_max_output: int = 0` (workflow-level output truncation cap)
+- Access via `set_max_output(n)` / `get_max_output()` functions
+- Never expose variable directly to other modules
 
-职责：worktree生命周期管理和自动提交。
+Dependencies: models
 
-内容：
-- `_merge_single_worktree(node_name, worktree_path, main_dir)` — 单个worktree合并
-- `merge_worktrees(nodes, results, run_dir, main_dir)` — 批量合并调度
-- `prune_worktrees(base_dir)` — 清理已合并的worktree
-- `auto_commit(gate_name, upstream_names, main_dir, push)` — gate通过后自动commit+push
-- `setup_worktree(node_name, base_dir)` — 创建worktree目录和分支
+### 4. tui.py -- Terminal UI + Logging
 
-依赖：models, executor (_run_streamed，用于git命令)
+Responsibility: rich-based TUI panel + global log interface + output formatting functions.
 
-### 5. replan.py — Adaptive Replanning
+This is the biggest design change from v1: `_log` and `_log_line` belong to tui.py.
 
-职责：运行时DAG动态修改。
+Rationale: `_log` (L1436) and `_log_line` (L256) both directly read/write `_display`.
+`_log` is the most widely used function in dage (97 occurrences, across executor/git_ops/
+replan/planner/engine). Putting `_log` in tui.py is the ONLY approach that requires no
+callback injection or dependency inversion, because tui.py depends only on models+workflow,
+so any module can safely `from dage.tui import log` without creating circular deps.
 
-内容：
-- `detect_replan(nodes, results)` — 扫描adaptive节点output中的[REPLAN:]信号
-- `call_replanner(nodes, results, trigger, reason, config)` — 调用claude生成replan YAML
-- `apply_replan(nodes, results, replan_result, defaults)` — 应用replan（添加/删除节点 + 验证）
-- `handle_replan(nodes, results, trigger, reason, config, run_dir)` — 完整replan流程（检测→生成→确认→应用）
-- `_confirm_replan(replan_result)` — 交互式用户确认
+Contents:
+- `_HAS_RICH` -- rich availability detection
+- `_ANSI_COLORS` / `_ANSI_RESET` -- terminal color constants (current L253-254)
+- `_display: DageDisplay | None` -- module-level TUI object (current L1434)
+- `log(msg)` -- global log entry (current `_log` L1436, public naming)
+- `log_line(name, line)` -- node output colored log (current `_log_line` L256)
+- `DageDisplay` class -- Live panel (L1285-1432)
+- `_LiveProxy` class -- Rich render proxy (L1280)
+- `_STATUS_ICON` dict -- status icon mapping (L1272)
+- `set_display(d)` -- called by engine to set `_display`
+- `get_display()` -- called by engine to read `_display`
+- `print_summary(results)` -- execution summary (L1442)
+- `print_plan(nodes)` -- plan display (L1458)
+- `print_status(run_dir)` -- run status (L1471)
+  - Interface change: param is `run_dir` (resolved path), not `repo_dir`.
+    Latest run resolution moves to cli.py/engine.py.
 
-依赖：models, workflow (validate, build, _extract_yaml), executor (call_claude), prompts (_REPLAN_PROMPT)
+Dependencies: models, workflow (for `topo_layers` used in `DageDisplay._render()` L1326
+and `print_plan` L1459)
 
-### 6. engine.py — DAG Execution Loop
+### 5. executor.py -- Process Execution
 
-职责：编排整个DAG的执行，协调所有子系统。
+Responsibility: manage subprocess lifecycle, execute shell and claude nodes.
 
-这是最核心的模块，将各组件粘合在一起。
+Contents:
+- `_active_procs` / `_active_procs_lock` -- process tracking (module-level private)
+- `_SKILL_SEARCH_PATHS` -- skill search paths (current L312)
+- `kill_active_procs()` -- terminate all processes (L240)
+- `register_signal_handlers()` -- explicitly register SIGTERM handler, NOT at import time
+  - `_sigterm_handler` calls `kill_active_procs()` then raises KeyboardInterrupt
+- `_run_streamed(name, cmd, ...)` -- streaming subprocess execution (L269)
+  - Calls `tui.log_line` for output logging
+- `_load_skills(names)` -- skill file loading (L317)
+  - Calls `tui.log` for logging
+- `run_shell(node, cmd, cwd)` -- shell node execution (L338)
+- `run_claude(node, prompt, run_dir, run_id, repo_dir, worktree)` -- ccx node execution (L358)
+- `execute_node(node, ctx, run_dir, run_id, repo_dir, dry_run, worktree)` -- retry wrapper (L494)
+  - Injects META_STYLE for claude nodes (from prompts)
+- `call_claude(prompt, timeout, system)` -- lightweight claude CLI query (current `_call_claude` L1594)
+  - Uses `claude` CLI (not ccx), for planner and replan
+- `_parse_timeout(timeout)` -- time string parsing (L410)
 
-内容：
-- `run_dag(nodes, workflow_config, run_dir, ...)` — 主循环（ThreadPoolExecutor + wait(FIRST_COMPLETED)）
-- `_handle_gate_fail(gate_name, nodes, results, blocked, ...)` — gate失败处理（autofix + 下游阻塞）
-- `_autofix_gate(gate_name, gate_cmd, error_output, ...)` — 调用claude修复gate
-- `_annotate_design_docs(gate_name, doc_path, ...)` — gate成功后注释设计文档
-- `_load_previous_run(run_dir)` — 从上次运行恢复状态（--from）
-- `save_results(results, run_dir)` — 持久化results.json
-- `print_summary(nodes, results, duration)` — 执行摘要输出
-- `_should_skip(node, context)` — condition表达式求值
+Dependencies: models, workflow(interpolate), prompts(META_STYLE), tui(log, log_line)
 
-依赖：models, workflow, executor, git_ops, replan, tui, prompts
+### 6. git_ops.py -- Git Operations
 
-### 7. tui.py — Terminal UI
+Responsibility: worktree lifecycle and auto-commit.
 
-职责：基于rich的实时DAG状态面板。
+Contents:
+- `_merge_single_worktree(node_name, wt_name, repo_dir)` -- single worktree merge (L523)
+- `merge_worktrees(auto_wt, repo_dir, run_id)` -- batch merge (L561)
+- `prune_worktrees(repo_dir)` -- clean up merged worktrees (L566)
+- `auto_commit(gate_name, nodes, repo_dir, push)` -- auto commit after gate pass (L605)
 
-内容：
-- `_HAS_RICH` — rich库可用性检测
-- `DageDisplay` class — Live面板管理
-  - `update_node(name, status, detail)` — 更新节点状态
-  - `log(message)` — 追加日志行
-  - `refresh()` — 重绘面板
-  - `_build_dag_panel()` — DAG状态面板构建
-  - `_build_log_panel()` — 日志面板构建
-- `get_display(enabled) -> DageDisplay | None` — 工厂函数
-- `log_line(name, line, color)` — 节点输出着色日志（fallback到print）
+All git commands run via `executor._run_streamed`, logging via `tui.log`.
 
-依赖：models (Status enum)。rich为可选依赖。
+Dependencies: models(Node), executor(_run_streamed), tui(log)
 
-### 8. prompts.py — Prompt Templates
+### 7. replan.py -- Adaptive Replanning
 
-职责：存放所有AI prompt模板字符串。纯数据，无逻辑。
+Responsibility: runtime DAG dynamic modification.
 
-内容（全部为模块级字符串常量）：
-- `META_STYLE` — 猫娘+雌小鬼风格注入
-- `DAGE_KNOWLEDGE` — dage框架知识（注入给replanner/planner）
-- `MATURE_PROMPT` — Phase 1: 原始想法成熟化
-- `PLAN_DOC_PROMPT` — Phase 2: 设计拆分为工作流
-- `BRAINSTORM_PROMPT` — Phase 3: 工作流映射DAG
-- `PLAN_PROMPT` — Phase 4: 生成最终YAML
-- `REPLAN_PROMPT` — 自适应重规划
-- `AUTOFIX_PROMPT` — Gate失败自动修复
-- `ANNOTATE_PROMPT` — 设计文档注释
+Contents:
+- `detect_replan(nodes, results, layer)` -- scan [REPLAN:] signals (L693)
+- `call_replanner(wf, nodes, results, trigger, reason, seq, run_dir)` -- call claude for replan (L785)
+  - Uses `executor.call_claude` and `workflow.extract_yaml`
+  - Note: does NOT validate `nodes` key on extract_yaml result (replan YAML has no such key)
+- `apply_replan(nodes, results, blocked, replan_result, defaults, run_dir, seq)` -- apply replan (L824)
+- `_format_replan_proposal(replan_result)` -- format proposal (L864)
+- `_confirm_replan()` -- interactive confirmation (L881)
 
-命名变更：去掉前导下划线（不再是模块私有），如 `_META_STYLE` → `META_STYLE`。
+Dependencies: models, workflow(validate_workflow, _build_one_node, extract_yaml),
+executor(call_claude), prompts(REPLAN_PROMPT, DAGE_KNOWLEDGE), tui(log), models(save_json)
 
-依赖：无。
+### 8. engine.py -- DAG Execution Loop
 
-### 9. planner.py — AI Plan Generation
+Responsibility: orchestrate DAG execution, coordinate all subsystems. The core module.
 
-职责：四阶段AI工作流生成。
+Contents:
+- `build_context(wf, results, run_id)` -- build execution context (L175)
+- `_build_summary(results)` -- result summary (L182)
+- `should_skip(node, ctx)` -- condition expression evaluation (L423)
+- `_reload_config(wf)` -- extract mutable config (L940)
+- `_handle_gate_fail(name, nodes, results, blocked, ...)` -- gate failure handling (L953)
+- `_autofix_gate(gate, gate_result, nodes, ctx, ...)` -- call claude to fix gate (L653)
+- `_annotate_design_docs(wf, nodes, results, gate_name, ...)` -- annotate design docs after gate pass (L462)
+- `_handle_replan(name, nodes, results, blocked, ...)` -- single node replan check (L976)
+- `_hot_reload(yaml_path, nodes, results, blocked, wf)` -- YAML hot reload (L895)
+- `run_dag(wf, nodes, repo_dir, dry_run, from_node)` -- main loop (L1022)
+  - ThreadPoolExecutor + wait(FIRST_COMPLETED)
+  - At start: set `_max_output` (via workflow.set_max_output), create DageDisplay (via tui)
+  - Register/restore signal handler
+- `_load_resume_state(nodes, from_node, repo_dir)` -- resume from last run (L1188)
+- `save_state(run_dir, results)` -- persist results.json (L1240)
+- `save_latest_link(repo_dir, run_id)` -- write latest file (L1244)
+- `_find_latest_run(repo_dir)` -- find most recent run dir (L1248)
 
-内容：
-- `generate_plan(description, output_path, skills, run_after)` — 四阶段生成主流程
-- `_run_phase(phase_num, prompt, timeout)` — 单阶段执行
-- `_inject_skills(prompt, skill_names)` — 技能知识注入
+Dependencies: models, workflow, executor, git_ops, replan, tui, prompts
 
-依赖：models, workflow (_extract_yaml), executor (call_claude), prompts
+### 9. planner.py -- AI Plan Generation
 
-### 10. cli.py — Command-Line Interface
+Responsibility: four-phase AI workflow generation.
 
-职责：argparse定义、命令分发、main入口。
+Contents:
+- `generate_plan(description, skills)` -- four-phase main flow (L1731)
+  - Phase 1: mature (MATURE_PROMPT)
+  - Phase 2: decompose (PLAN_DOC_PROMPT)
+  - Phase 3: map to DAG (BRAINSTORM_PROMPT)
+  - Phase 4: generate YAML (_generate_yaml)
+- `_generate_yaml(design, description, skill_ctx)` -- YAML generation (L1715)
+  - Calls `workflow.extract_yaml` then additionally validates `nodes` key (planner-specific semantic)
 
-内容：
-- `build_parser()` — argparse配置
-- `cmd_run(args)` — `dage run` 命令
-- `cmd_validate(args)` — `dage validate` 命令
-- `cmd_status(args)` — `dage status` 命令
-- `cmd_plan(args)` — `dage plan` 命令
-- `main()` — 入口函数
+Dependencies: models, workflow(extract_yaml), executor(call_claude, _load_skills),
+prompts(*), tui(log)
 
-依赖：workflow, engine, planner, tui
+### 10. cli.py -- Command-Line Interface
+
+Responsibility: argparse definition, command dispatch, program entry. `sys.exit()` only here.
+
+Contents:
+- `build_parser()` -- argparse configuration
+- `cmd_run(args)` -- `dage run`
+- `cmd_validate(args)` -- `dage validate`
+- `cmd_status(args)` -- `dage status`
+  - Resolves latest run dir, passes to `tui.print_status(run_dir)`
+- `cmd_plan(args)` -- `dage plan`
+- `main()` -- entry function
+  - Calls `executor.register_signal_handlers()` (not at import time)
+
+Dependencies: workflow, engine, planner, tui
+
+### 11. `__init__.py`
+
+```python
+"""dage -- DAG-based Agent Workflow Orchestrator."""
+__version__ = "0.1.0"
+```
+
+Version only, no bulk re-export. Users import via explicit paths:
+`from dage.workflow import load_workflow`
+
+### 12. `__main__.py`
+
+```python
+from dage.cli import main
+main()
+```
+
+## Cross-Cutting Concerns
+
+### `_log` Resolution (core design decision)
+
+`_log` is used 97 times across the entire codebase. Three placement options:
+
+Option 1 -- tui.py owns `log` (CHOSEN):
+- `_log`'s entire logic: "if display exists, call display.log; else print to stderr"
+- It only reads `_display` (tui state), needs nothing from other modules
+- All modules: `from dage.tui import log`
+- tui depends only on models+workflow; any upper module importing tui creates no cycle
+
+Option 2 -- callback injection:
+- engine injects `_log` callback into executor/git_ops/replan at init
+- Requires changing all function signatures or using module-level setters
+- Over-engineered, complexity not justified
+
+Option 3 -- separate logging.py:
+- An extra 5-line file for one function
+- Semantically `_log` IS a display concern; extracting it is purely to avoid "tui dependency"
+- But tui only depends on models+workflow, being depended upon is harmless
+
+Conclusion: `log` and `log_line` live in tui.py. Drop leading underscore (no longer module-private).
+
+### `_extract_yaml` Flexibility
+
+Current implementation (commit 9f6903e) hard-validates `nodes` key after YAML extraction.
+This prevents replan from using this function (replan YAML top-level keys are
+`justification/remove/add`).
+
+Fix:
+- `extract_yaml(text) -> str`: extract YAML text, verify it's valid YAML dict, no key validation
+- Callers do semantic validation:
+  - `_generate_yaml` (planner): check result dict contains `nodes`
+  - `call_replanner` (replan): check result is dict (no specific key)
+
+### Global Mutable State
+
+| State              | Owner module | Access pattern                            |
+|--------------------|-------------|-------------------------------------------|
+| `_max_output`      | workflow.py | `set_max_output(n)` / `get_max_output()`  |
+| `_active_procs` + lock | executor.py | module-private, via `kill_active_procs()` |
+| `_display`         | tui.py      | `set_display(d)` / `get_display()` by engine |
+| `_HAS_RICH`        | tui.py      | module-private                            |
+
+Principle: state stays in the module that uses it, cross-module access via function interface.
+
+### Signal Handler
+
+Current `signal.signal(SIGTERM, _sigterm_handler)` is registered inside `run_dag()` (L1070),
+not at import time. Modularized version preserves this:
+- `executor.py` provides `register_signal_handlers()` function
+- `engine.run_dag()` calls it at start, restores at end (current L1070/L1168 pattern)
+- No side effects at module import time
 
 ## Data Flow
 
 ```
-                    YAML file
-                       │
-                  load_workflow()          ← workflow.py
-                       │
-                  build_nodes()            ← workflow.py
-                       │
-                validate_workflow()        ← workflow.py
-                       │
-                   run_dag()               ← engine.py
-                       │
-            ┌──────────┼──────────┐
-            │          │          │
-      next_runnable() ...    tui.refresh()
-            │                     ← tui.py
-      ┌─────┴─────┐
-      │            │
-  execute_node()  ...              ← executor.py
-      │
-  ┌───┴───┐
-  │       │
-shell   claude                     ← executor.py
-  │       │
-  └───┬───┘
-      │
-  gate pass? ──no──→ _handle_gate_fail()  ← engine.py
-      │                    │
-      │              find_blocked()        ← workflow.py
-      │              _autofix_gate()       ← engine.py + executor.py
-      │
-  adaptive? ──yes─→ handle_replan()       ← replan.py
-      │                    │
-      │              call_replanner()      ← replan.py + executor.py
-      │              apply_replan()        ← replan.py + workflow.py
-      │
-  worktree? ──yes─→ merge_worktrees()     ← git_ops.py
-      │
-  auto_commit? ───→ auto_commit()         ← git_ops.py
-      │
-  save_results()                           ← engine.py
-  print_summary()                          ← engine.py
+                   YAML file
+                      |
+                 load_workflow()          workflow.py
+                      |
+                 build_nodes()            workflow.py
+                      |
+               validate_workflow()        workflow.py
+                      |
+                  run_dag()               engine.py
+                      |
+           +----------+----------+
+           |          |          |
+     next_runnable() ...    tui.refresh()
+           |                     tui.py
+     +-----+-----+
+     |            |
+ execute_node()  ...              executor.py
+     |
+ +---+---+
+ |       |
+shell   ccx                      executor.py
+ |       |
+ +---+---+
+     |
+ gate pass?  --no--> _handle_gate_fail()    engine.py
+     |                    |
+     |              find_blocked()          workflow.py
+     |              _autofix_gate()         engine.py + executor.py
+     |
+ adaptive?  --yes-> _handle_replan()        engine.py
+     |                    |
+     |              call_replanner()        replan.py + executor.py
+     |              apply_replan()          replan.py + workflow.py
+     |
+ worktree?  --yes-> merge_worktrees()      git_ops.py
+     |
+ auto_commit? ----> auto_commit()          git_ops.py
+     |
+ save_state()                              engine.py
+ print_summary()                           tui.py
 ```
-
-## Dependency Graph (modules)
-
-```
-prompts          models            (no deps)
-   │               │
-   │          workflow.py
-   │          │    │    │
-   │     executor  │    │
-   │     │    │    │    │
-   │  git_ops │    │    │
-   │     │    │    │    │
-   │     replan────┘    │
-   │     │              │
-   └──engine────────────┘
-        │
-       tui
-        │
-       cli
-```
-
-单向依赖，无环路。engine是汇聚点，将所有子系统粘合。
-
-## Global Mutable State Handling
-
-当前代码有以下全局可变状态，模块化时需要明确归属：
-
-| State | Current | After | Rationale |
-|-------|---------|-------|-----------|
-| `_max_output` | dage.py全局 | workflow.py模块级 + setter函数 | 被interpolate使用，engine在run_dag开头设置 |
-| `_active_procs` | dage.py全局 | executor.py模块级 | 仅被_run_streamed和signal handler使用 |
-| `_display` | dage.py全局 | tui.py模块级 | 仅被TUI函数使用 |
-| `_HAS_RICH` | dage.py全局 | tui.py模块级 | 仅被TUI使用 |
-
-原则：全局可变状态留在使用它的模块内，通过函数接口访问，不跨模块直接读写。
 
 ## Error Handling
 
-- 各模块用异常（ValueError, RuntimeError）报告错误
-- `sys.exit()` 仅在 cli.py 中使用
-- executor.py 中的进程错误封装为 NodeResult(status=FAILED)
+- Modules raise standard exceptions (ValueError, RuntimeError) for errors
+- Process execution errors wrapped as `NodeResult(status=FAILED)`
+- `sys.exit()` only in cli.py
+- `_extract_yaml`'s ValueError caught by callers (planner/replan) for graceful degradation
 
 ## Testing
 
-现有测试为YAML集成测试（test_parallel.yaml等），不受模块化影响。
-模块化后，每个模块可独立编写单元测试（尤其是workflow.py的纯函数）。
+Existing YAML integration tests (tests/ directory) are unaffected by modularization.
 
-建议后续添加：
-- `tests/test_workflow.py` — interpolate、topo_layers、find_blocked的单元测试
-- `tests/test_extract_yaml.py` — YAML提取的边界用例
+Each module can be unit-tested independently after modularization. Priority:
+1. `workflow.py` -- interpolate, topo_layers, find_blocked, extract_yaml (pure functions, easiest to test)
+2. `models.py` -- node_to_dict, NodeResult.to_dict
+
+Verification commands:
+```bash
+# package importable
+python -c "from dage.cli import main; print('ok')"
+
+# CLI help works
+python -m dage --help
+
+# all existing integration tests pass
+python -m dage run tests/test_parallel.yaml
+python -m dage run tests/test_parallel_gate.yaml
+python -m dage run examples/test-shell.yaml
+
+# entry point works
+pip install -e . && dage --help
+```
 
 ## Migration Steps
 
-1. 创建 `dage/` 目录和 `__init__.py`
-2. 从 dage.py 提取 models.py（纯数据，无需改动）
-3. 提取 prompts.py（纯字符串常量）
-4. 提取 workflow.py（load/build/validate/interpolate/scheduling/extract_yaml）
-5. 提取 tui.py（DageDisplay + 日志函数）
-6. 提取 executor.py（进程管理 + 执行器）
-7. 提取 git_ops.py（worktree + auto-commit）
-8. 提取 replan.py（自适应重规划）
-9. 提取 planner.py（AI plan生成）
-10. 提取 engine.py（DAG主循环 + gate处理）
-11. 提取 cli.py（argparse + main）
-12. 创建 `__main__.py`
-13. 删除原 `dage.py`（或替换为shim）
-14. 添加 `pyproject.toml` 声明entry point
-15. 运行所有现有YAML测试验证功能不变
+Order principle: extract dependency-free bottom modules first, work upward layer by layer.
+Verify imports after each step.
 
-顺序原则：先提取无依赖的底层模块，逐层向上，最后提取依赖最多的engine和cli。每提取一个模块后立即运行测试验证。
+1. `mkdir dage/` + create `__init__.py`
+2. Extract models.py (pure data, zero changes)
+3. Extract prompts.py (pure string constants, strip leading underscores)
+4. Extract workflow.py (load/build/validate/interpolate/scheduling + extract_yaml fix)
+5. Extract tui.py (DageDisplay + log + log_line + print_* + ANSI constants)
+6. Extract executor.py (process mgmt + runners + call_claude + register_signal_handlers)
+7. Extract git_ops.py (worktree + auto-commit)
+8. Extract replan.py (adaptive replanning)
+9. Extract planner.py (AI plan generation)
+10. Extract engine.py (DAG main loop + gate handling + state persistence)
+11. Extract cli.py (argparse + main)
+12. Create `__main__.py`
+13. Create pyproject.toml
+14. Delete root dage.py
+15. Run full verification
+
+Parallelizable steps: 2+3 (both zero-dep), 7+8+9 (all depend on executor but not each other).
+
+## Changes from v1
+
+1. `_log` ownership: from "TBD/callback" to explicit tui.py. tui depends only on
+   models+workflow, so any module importing it creates no cycle. This is the only
+   approach requiring no function signature changes.
+
+2. `_extract_yaml`: remove `nodes` key hard-validation, fixing latent bug where replan
+   would fail (replan YAML format is `{justification, remove, add}`, no `nodes` key).
+   Semantic validation pushed to callers.
+
+3. Constant placement follows consumers: `_ANSI_COLORS` -> tui.py, `_SKILL_SEARCH_PATHS`
+   -> executor.py. Only `_ROLE_MAX_RUNS` stays in models.py (describes Role semantic constraints).
+
+4. tui.py dependency correction: tui imports workflow.topo_layers (used in DageDisplay._render
+   and print_plan). v1 missed this dependency.
+
+5. Backward compat: shim approach dropped. Delete dage.py, use pyproject.toml entry point.
