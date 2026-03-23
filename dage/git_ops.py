@@ -4,13 +4,19 @@ from dage.models import Node, Role
 from dage.executor import _run_streamed
 from dage.tui import log
 
+# ==== Worktree Paths
+
+def worktree_path(repo_dir: str, wt_name: str) -> str:
+    """Return absolute path to a worktree directory."""
+    return os.path.realpath(
+        os.path.join(repo_dir, ".dage", "worktrees", wt_name))
+
 # ==== Worktree Merge
 
 def _merge_single_worktree(node_name: str, wt_name: str,
                            repo_dir: str) -> bool:
     """Merge one worktree branch back to main. Returns True on success."""
-    wt_base = os.path.join(repo_dir, ".dage", "worktrees")
-    wt_path = os.path.realpath(os.path.join(wt_base, wt_name))
+    wt_path = worktree_path(repo_dir, wt_name)
     if not os.path.isdir(wt_path):
         return True
     try:
