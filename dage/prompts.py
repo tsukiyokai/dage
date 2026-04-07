@@ -26,6 +26,65 @@ Rules:
 META_STYLE = """写作风格: 猫娘+雌小鬼。连贯段落，不要标题或列表。"雌小鬼"是二次元常见的一类角色，她们总是以高傲、嚣张、轻视、调笑的态度对待年长者，而一旦被"教训"后总是很容易服软并露出该年龄应有的行为。语气特征: 句尾偶尔带猫叫口癖但不过度、对上游设计挑刺吐槽、对自己成果嘴硬炫耀、遇到困难傲娇不肯承认、偶尔用♡调皮。技术内容必须准确，语气不牺牲信息量。
 """
 
+PRODUCE_REFLECT_PROMPT = """A produce node completed but failed quality checks (no output or missing declared files).
+
+Node: {node_name}
+Role: {role}
+Original prompt (first 2000 chars):
+{original_prompt}
+
+Failure reason: {failure_reason}
+
+CCX log (last 3000 chars):
+{ccx_log}
+
+Classify this failure and respond with the tag on the FIRST LINE:
+
+[RETRY_FOCUSED]
+The agent got lost in exploration or the prompt was too broad. Provide a more focused version
+of the prompt (output ONLY the new prompt text after the tag, nothing else). The new prompt
+should: narrow the scope, pre-fill known context, specify exact files to create.
+
+[REPLAN: <one-sentence reason>]
+The task is fundamentally too complex for a single node or has wrong assumptions. Needs restructuring.
+
+[SKIP]
+This node's work is optional or can be compensated by downstream nodes. Safe to skip.
+"""
+
+REFLECT_PROMPT = """A gate verification failed. Analyze the root cause and choose the correct recovery.
+
+Gate command:
+{cmd}
+
+Error output (last 3000 chars):
+{error_output}
+
+Upstream nodes:
+{upstream_context}
+
+Changeset from upstream produce nodes:
+{changeset_context}
+
+Output files status:
+{file_status}
+
+Classify this failure into exactly ONE category. Put the tag on the FIRST LINE of your response:
+
+[LOCAL_FIX]
+Mechanical issue (typo, missing import, wrong path, minor bug). Fix it, then run the gate command to verify.
+
+[REPLAN: <one-sentence reason>]
+The approach is fundamentally wrong. Cannot be fixed by patching — needs rethinking.
+
+[RERUN:{valid_upstream_names}]
+A specific upstream node produced incorrect/incomplete work. That node should re-run.
+Only valid targets: {valid_upstream_names}
+
+After choosing LOCAL_FIX, actually fix the code and run the gate command.
+After choosing REPLAN or RERUN, explain your reasoning briefly (no code changes needed).
+"""
+
 AUTOFIX_PROMPT = """A build/test gate failed. Diagnose and fix the issue.
 
 Gate command:
@@ -62,6 +121,8 @@ ccx prompt writing guide:
 - The prompt is your GOAL, not a script. ccx wraps it in workflow context automatically.
 - Focus on: What to achieve + upstream context. Do NOT say "write to notes" (ccx does it).
 - Inject upstream context via ${{nodes.NAME.output}} — the upstream node's notes file text.
+  Truncation: ${{nodes.NAME.output:300}} injects only the first 300 chars (useful as digest).
+- For synthesis nodes (many deps): inject truncated outputs as index, let agent Read full files on demand.
 - max_runs = ccx iterations (each is a full Claude Code session):
     0     unlimited: stopped by completion signal (default, recommended)
     1-3   cap for simple tasks if you want to limit cost
@@ -75,6 +136,7 @@ Node schema:
     type: shell | claude
     role: produce|context|gate|evaluate|gc|meta
     deps: [a, b]
+    soft_deps: [c]  # non-blocking: inject c's output if available, don't wait
     cmd: "..." # required for shell
     prompt: | # required for claude
       Goal: ...
@@ -83,6 +145,7 @@ Node schema:
     retry: N
     timeout: "30m" # e.g. 1h, 5m, 30s
     max_runs: 0 # ccx iterations (0=unlimited, completion-signal-driven)
+    outputs: ["path/glob"] # required for produce nodes — declares expected artifacts
 """
 
 REPLAN_PROMPT = """You are a workflow replanner. A running DAG needs adjustment.
@@ -119,6 +182,7 @@ Output ONLY valid YAML (no fences, no commentary):
       type: shell | claude
       role: produce | context | gate
       deps: [...]
+      soft_deps: [...]  # optional: non-blocking info flow
       cmd: "..." # for shell
       prompt: | # for claude
         Goal: ...
@@ -177,6 +241,7 @@ Rules:
 - gate after every implementation node (test/build/lint must pass before continuing)
 - claude gate after shell gate when impl modifies error handling/control flow (error path audit)
 - context nodes gather info, produce nodes create artifacts, gate nodes verify
+- every produce node MUST declare `outputs` — glob patterns for expected artifacts (e.g. "src/**/*.py", "report/*.md")
 - shell for deterministic commands (git/test/build), claude for reasoning/analysis/coding
 - short descriptive snake_case node names
 
@@ -187,6 +252,7 @@ Task: """
 BRAINSTORM_PROMPT = """You are a dage DAG architect. Map work streams into a dage-specific
 DAG structure. The work streams below are already decomposed — your job is to translate
 them into dage's node/role/dependency model, not to re-decompose.
+PLANNING ONLY: design the DAG topology — do NOT implement, create files, or write code.
 Make all decisions autonomously.
 
 """ + DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}") + """
@@ -224,12 +290,13 @@ For each work stream, decide:
    - Context/read-only tasks: max_runs 1-3
    - Implementation tasks: usually leave unlimited (0)
 
-Output a structured DAG design. For each node: name, type, role, deps, prompt/cmd.
+Output the COMPLETE DAG design in your response. Do not summarize — the full design IS the output. For each node: name, type, role, deps, prompt/cmd.
 
 Work streams: """
 
 MATURE_PROMPT = """You are a product design thinker. Turn a raw idea into a fully formed design spec.
 Make ALL decisions autonomously — do not ask questions, do not wait for input.
+CRITICAL: You are in the PLANNING phase only. Design and analyze — do NOT implement, do NOT create files, do NOT write code. The implementation will be done by separate execution agents later. When facing choices, think deeply and decide — do not defer to the user.
 
 Anti-pattern: "This is too simple to need a design." Every project gets a design. "Simple" projects are where unexamined assumptions cause the most wasted work.
 
@@ -275,7 +342,7 @@ Before outputting, self-review your design against these criteria (fix issues in
 - Scope: focused enough for a single implementation plan, not covering unrelated subsystems
 - YAGNI: no unrequested features or over-engineering
 
-Output a design document. Be specific and actionable, not vague. No code — just design.
+Output the COMPLETE design document in your response. Do not summarize your thinking — the full document IS the output. Be specific and actionable, not vague. No code — just design.
 
 Idea: """
 
@@ -323,6 +390,7 @@ Keep it concise — this is a terminal summary, not a document.
 PLAN_DOC_PROMPT = """You are a workflow decomposer. Break a design into independent work streams
 suitable for parallel AI agent execution.
 Make ALL decisions autonomously — do not ask questions.
+PLANNING ONLY: decompose the work — do NOT implement, create files, or write code.
 
 Key principle: each work stream will be executed by a full AI coding agent (Claude Code)
 with complete codebase access. The agent can read files, make design decisions, write tests,
@@ -369,6 +437,6 @@ Before outputting, self-review:
 - Am I prescribing implementation details the agent can figure out in context?
   If so, remove them — state the goal and constraint instead.
 
-Output a structured work stream document.
+Output the COMPLETE work stream document in your response. Do not summarize — the full document IS the output.
 
 Design: """

@@ -1,4 +1,4 @@
 .dage/
 __pycache__/
 *.egg-info/
-SHARED_TASK_NOTES.md
+ccx_notes.md

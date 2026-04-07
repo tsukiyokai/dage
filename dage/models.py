@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -33,6 +34,7 @@ class Node:
     type:      NodeType
     role:      Role
     deps:      list[str]       = field(default_factory=list)
+    soft_deps: list[str]       = field(default_factory=list)
     prompt:    str             = ""
     cmd:       str             = ""
     condition: str             = ""
@@ -46,10 +48,11 @@ class Node:
 
 @dataclass
 class NodeResult:
-    status:   Status  = Status.PENDING
-    output:   str     = ""
-    duration: float   = 0.0
-    retries:  int     = 0
+    status:    Status     = Status.PENDING
+    output:    str        = ""
+    changeset: str        = ""
+    duration:  float      = 0.0
+    retries:   int        = 0
     cost:      float      = 0.0
     artifacts: list[dict] = field(default_factory=list)
 
@@ -58,6 +61,8 @@ class NodeResult:
              "duration": round(self.duration, 1), "retries": self.retries}
         if self.output:
             d["output"] = self.output
+        if self.changeset:
+            d["changeset"] = self.changeset
         if self.cost > 0:
             d["cost"] = round(self.cost, 4)
         if self.artifacts:
@@ -68,6 +73,12 @@ class NodeResult:
 
 _ROLE_MAX_RUNS = {Role.CONTEXT: 1, Role.META: 1, Role.GATE: 1}
 
+# ==== Path Utilities
+
+def node_artifact_dir(run_dir: str, node_name: str) -> str:
+    """Per-node artifact directory: {run_dir}/nodes/{node_name}/."""
+    return os.path.join(run_dir, "nodes", node_name)
+
 # ==== Data Utilities
 
 def save_json(path: str, data):
@@ -77,6 +88,7 @@ def save_json(path: str, data):
 def node_to_dict(node: Node) -> dict:
     d = {"type": node.type.value, "role": node.role.value}
     if node.deps:      d["deps"]      = node.deps
+    if node.soft_deps: d["soft_deps"] = node.soft_deps
     if node.prompt:    d["prompt"]    = node.prompt
     if node.cmd:       d["cmd"]       = node.cmd
     if node.condition: d["condition"] = node.condition

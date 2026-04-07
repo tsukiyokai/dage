@@ -6,10 +6,19 @@ import threading
 import time
 from pathlib import Path
 
-from dage.models import Node, NodeResult, NodeType, Role, Status
+from dage.models import Node, NodeResult, NodeType, Role, Status, node_artifact_dir
 from dage.workflow import interpolate
 from dage.prompts import META_STYLE
 from dage.tui import log, log_line
+
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand bash-style {a,b,c} brace patterns into multiple strings."""
+    m = re.search(r'\{([^}]+)\}', pattern)
+    if not m:
+        return [pattern]
+    prefix, suffix = pattern[:m.start()], pattern[m.end():]
+    return [ep for alt in m.group(1).split(',')
+            for ep in _expand_braces(prefix + alt + suffix)]
 
 # ==== Process Tracking
 
@@ -41,7 +50,8 @@ def _run_streamed(name: str, cmd, *, shell=False, cwd=None,
     env = os.environ.copy()
     env["CCX_MANAGED"] = "1"
     proc = subprocess.Popen(
-        cmd, shell=shell, cwd=cwd, env=env,
+        cmd, shell=shell, executable="/bin/bash" if shell else None,
+        cwd=cwd, env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
@@ -85,8 +95,11 @@ _SKILL_SEARCH_PATHS = [
     ".claude/skills/{name}",
 ]
 
-def _load_skills(names: list[str]) -> str:
-    """Load SKILL.md content for each named skill. Returns concatenated text."""
+def _load_skills(names: list[str], summary_only: bool = False) -> str:
+    """Load SKILL.md content for each named skill. Returns concatenated text.
+
+    summary_only: extract only name+description from frontmatter (for planning).
+    """
     parts = []
     for name in names:
         for pattern in _SKILL_SEARCH_PATHS:
@@ -95,11 +108,26 @@ def _load_skills(names: list[str]) -> str:
             skill_file = os.path.join(skill_dir, "SKILL.md")
             if os.path.exists(skill_file):
                 content = Path(skill_file).read_text().strip()
-                # rewrite relative paths to absolute
-                ref_dir = os.path.join(skill_dir, "references")
-                if os.path.isdir(ref_dir):
-                    content = content.replace("references/", ref_dir + "/")
-                parts.append(f"# Skill: {name}\n\n{content}")
+                if summary_only:
+                    # extract description from YAML frontmatter
+                    import yaml as _yaml
+                    if content.startswith("---"):
+                        end = content.find("---", 3)
+                        if end > 0:
+                            try:
+                                fm = _yaml.safe_load(content[3:end])
+                                desc = fm.get("description", "")
+                                parts.append(f"# Skill: {name}\n{desc}")
+                                break
+                            except Exception:
+                                pass
+                    parts.append(f"# Skill: {name}\n(no description)")
+                else:
+                    # rewrite relative paths to absolute
+                    ref_dir = os.path.join(skill_dir, "references")
+                    if os.path.isdir(ref_dir):
+                        content = content.replace("references/", ref_dir + "/")
+                    parts.append(f"# Skill: {name}\n\n{content}")
                 log(f"  skill loaded: {name} ({skill_file})")
                 break
         else:
@@ -143,10 +171,10 @@ def run_shell(node: Node, cmd: str, cwd: str | None = None) -> NodeResult:
 
 def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
                repo_dir: str, worktree: str = "") -> NodeResult:
-    node_dir = os.path.join(run_dir, node.name)
+    node_dir = node_artifact_dir(run_dir, node.name)
     os.makedirs(node_dir, exist_ok=True)
 
-    notes_file = os.path.join(os.path.abspath(run_dir), f"{node.name}.notes.md")
+    notes_file = os.path.join(os.path.abspath(node_dir), "notes.md")
     cmd = [
         "ccx",
         "-p",                  prompt,
@@ -176,7 +204,38 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
         elapsed = time.monotonic() - t0
 
         notes_path = Path(notes_file)
-        output = notes_path.read_text().strip() if notes_path.exists() else ""
+        notes = notes_path.read_text().strip() if notes_path.exists() else ""
+
+        # extract changeset from worktree
+        patch = ""
+        diff_stat = ""
+        wt_dir = wt or node.worktree
+        if wt_dir:
+            from dage.git_ops import worktree_path, default_branch
+            wt_path = worktree_path(repo_dir, wt_dir)
+            if os.path.isdir(wt_path):
+                base = default_branch(repo_dir)
+                # commit any uncommitted changes first
+                subprocess.run(
+                    'git add -A && git diff --cached --quiet || '
+                    'git commit -m "dage: uncommitted changes"',
+                    shell=True, cwd=wt_path, capture_output=True, timeout=30)
+                # extract diff stat
+                r = subprocess.run(
+                    ["git", "diff", "--stat", f"{base}..HEAD"],
+                    cwd=wt_path, capture_output=True, text=True, timeout=30)
+                diff_stat = r.stdout.strip()
+                # extract full patch
+                r = subprocess.run(
+                    ["git", "diff", f"{base}..HEAD"],
+                    cwd=wt_path, capture_output=True, text=True, timeout=30)
+                patch = r.stdout.strip()
+
+        # save patch file
+        if patch:
+            patch_path = os.path.join(node_dir, "patch")
+            with open(patch_path, "w") as f:
+                f.write(patch)
 
         os.makedirs(node_dir, exist_ok=True)
         with open(os.path.join(node_dir, "ccx.log"), "w") as f:
@@ -185,9 +244,10 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
             f.write(f"=== returncode: {rc} ===\n")
 
         return NodeResult(
-            status   = Status.SUCCESS if rc == 0 else Status.FAILED,
-            output   = output,
-            duration = elapsed,
+            status    = Status.SUCCESS if rc == 0 else Status.FAILED,
+            output    = notes,
+            changeset = diff_stat,
+            duration  = elapsed,
         )
     except subprocess.TimeoutExpired:
         return NodeResult(status=Status.FAILED, output="[timeout]",
@@ -206,6 +266,32 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
     for attempt in range(max_attempts):
         prompt_or_cmd = interpolate(node.prompt or node.cmd, ctx)
+        if node.type == NodeType.CLAUDE:
+            if node.outputs:
+                prompt_or_cmd += f"\n\nDeclared outputs (you MUST create these files):\n"
+                prompt_or_cmd += "\n".join(f"  - {p}" for p in node.outputs) + "\n"
+            if node.role == Role.PRODUCE:
+                out_dirs = ", ".join(node.outputs) if node.outputs else "."
+                prompt_or_cmd += (
+                    f"\n\nQuality audit (applies to ALL artifacts, including pre-existing ones):\n"
+                    f"Scan your output directories ({out_dirs}) and verify every artifact:\n"
+                    f"\n"
+                    f"Structural integrity:\n"
+                    f"  - Scripts: every referenced file/command exists and is reachable\n"
+                    f"  - Patches: valid diff format, target file paths exist in codebase\n"
+                    f"  - Code references: file:line citations still match current code\n"
+                    f"\n"
+                    f"Content quality:\n"
+                    f"  - No skeleton/placeholder content (every section has substantive analysis)\n"
+                    f"  - Quantitative claims have derivation (not just 'estimated X%')\n"
+                    f"  - Implementation details are specific enough to act on without guessing\n"
+                    f"\n"
+                    f"If any artifact fails: fix it in place, then flag as [DISCOVERY: what was fixed]\n"
+                    f"Do NOT skip items because they 'already exist'. Existing = needs audit.\n"
+                )
+            disc = ctx.get("run", {}).get("discoveries", "")
+            if disc:
+                prompt_or_cmd += f"\n\nShared discoveries from other nodes:\n{disc}\n"
         if node.role == Role.META and node.type == NodeType.CLAUDE:
             prompt_or_cmd += META_STYLE
         if node.type == NodeType.SHELL:
@@ -216,11 +302,43 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
         last_result = result
         last_result.retries = attempt
         if result.status == Status.SUCCESS:
-            if node.role == Role.PRODUCE and not result.output.strip():
-                log(f"  [{node.name}] produce node succeeded but output is empty — marking failed")
-                result.status = Status.FAILED
-                result.output = "[empty output] agent completed but produced no changes"
-                return result
+            has_output = bool(result.output.strip())
+            has_patch  = os.path.exists(os.path.join(node_artifact_dir(run_dir, node.name), "patch"))
+
+            # produce: check declared outputs, then fallback to notes/patch
+            if node.role == Role.PRODUCE:
+                if node.outputs:
+                    import glob as _glob
+                    # check worktree first, then repo_dir (ccx may write to either)
+                    check_dirs = [repo_dir]
+                    wt_name = worktree or node.worktree
+                    if wt_name:
+                        from dage.git_ops import worktree_path
+                        check_dirs.insert(0, worktree_path(repo_dir, wt_name))
+                    found = any(
+                        _glob.glob(os.path.join(d, ep), recursive=True)
+                        for d in check_dirs
+                        for p in node.outputs
+                        for ep in _expand_braces(p))
+                    if not found:
+                        log(f"  [{node.name}] produce: declared outputs not found: {node.outputs}")
+                        result.status = Status.FAILED
+                        result.output += "\n[missing outputs] " + ", ".join(node.outputs)
+                        return result
+                elif not has_output and not has_patch:
+                    log(f"  [{node.name}] produce: no outputs, no notes, no code changes")
+                    result.status = Status.FAILED
+                    result.output = "[empty output] agent completed but produced no changes"
+                    return result
+
+            # context/claude: need notes
+            if node.role == Role.CONTEXT and node.type == NodeType.CLAUDE:
+                if not has_output:
+                    log(f"  [{node.name}] context: no notes captured")
+                    result.status = Status.FAILED
+                    result.output = "[empty output] context node gathered no information"
+                    return result
+
             return result
         if attempt < max_attempts - 1:
             log(f"  retry {attempt + 1}/{node.retry} for '{node.name}'...")
@@ -229,21 +347,31 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
 
 # ==== Lightweight Claude CLI
 
-def call_claude(prompt: str, timeout: int = 1800, system: str = "") -> str:
+def call_claude(prompt: str, timeout: int = 1800, system: str = "",
+                quiet: bool = False, readonly: bool = False,
+                no_tools: bool = False) -> str:
     """Call claude CLI for planner/replan queries (not ccx)."""
+    perm = "default" if readonly else "bypassPermissions"
     cmd = ["claude", "-p", prompt, "--output-format", "text",
            "--model", "claude-opus-4-6", "--effort", "max",
-           "--permission-mode", "bypassPermissions",
+           "--permission-mode", perm,
            "--add-dir", os.path.expanduser("~/.claude/skills"),
            "--add-dir", "/"]
+    if no_tools:
+        cmd += ["--tools", ""]
     if system:
         cmd += ["--append-system-prompt", system]
     try:
-        rc, stdout, stderr = _run_streamed("_plan", cmd, timeout=timeout)
+        if quiet:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            rc, stdout, stderr = r.returncode, r.stdout, r.stderr
+        else:
+            rc, stdout, stderr = _run_streamed("_plan", cmd, timeout=timeout)
     except FileNotFoundError:
         raise RuntimeError("'claude' CLI not found — install Claude Code first")
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"claude timed out ({timeout}s)")
     if rc != 0:
-        raise RuntimeError(f"claude failed: {stderr.strip()}")
+        detail = stderr.strip() or (stdout.strip()[-500:] if stdout else "")
+        raise RuntimeError(f"claude failed (rc={rc}): {detail}")
     return stdout.strip()

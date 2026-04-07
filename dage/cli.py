@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="generate then immediately execute")
     p_plan.add_argument("--from-design",
                         help="skip phases 1-3, generate YAML from existing design file")
+    p_plan.add_argument("--resume",
+                        help="resume from cached phases (timestamp, e.g. 20260327-112233)")
     p_plan.add_argument("--skills", nargs="+", default=[],
                         help="inject skill knowledge into plan phases")
 
@@ -120,9 +122,18 @@ def cmd_plan(args):
     else:
         log("generating workflow...")
         try:
-            raw, design = generate_plan(desc, skills=args.skills)
+            resume_ts = getattr(args, 'resume', '') or ''
+            raw, design = generate_plan(desc, skills=args.skills,
+                                        resume_ts=resume_ts)
         except RuntimeError as e:
             log(f"error: {e}")
+            # show resume hint with the timestamp used for phase caching
+            cached = [f for f in os.listdir(os.path.join(".dage", "plans"))
+                      if f.startswith(resume_ts or ts)] if os.path.isdir(os.path.join(".dage", "plans")) else []
+            if cached:
+                plan_ts = (resume_ts or ts)
+                log(f"\nresume: dage plan \"{args.description}\" --resume {plan_ts}"
+                    + (f" --skills {' '.join(args.skills)}" if args.skills else ""))
             sys.exit(1)
 
         # always save design (phases 1-3 output) regardless of phase 4 result
@@ -157,6 +168,9 @@ def cmd_plan(args):
     with open(out, "w") as f:
         f.write(raw + "\n")
     log(f"wrote {out}")
+
+    if not args.run:
+        log(f"\nnext: dage run {out}")
 
     if args.run:
         try:

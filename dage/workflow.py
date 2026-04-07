@@ -30,6 +30,7 @@ def _build_one_node(name: str, spec: dict, defaults: dict) -> Node:
         type      = NodeType(spec.get("type", defaults.get("type", "claude"))),
         role      = role,
         deps      = spec.get("deps", []),
+        soft_deps = spec.get("soft_deps", []),
         prompt    = spec.get("prompt", ""),
         cmd       = spec.get("cmd", ""),
         condition = spec.get("condition", ""),
@@ -56,10 +57,16 @@ def validate_workflow(nodes: dict[str, Node]) -> list[str]:
         for dep in node.deps:
             if dep not in nodes:
                 errors.append(f"node '{name}': unknown dep '{dep}'")
+        for dep in node.soft_deps:
+            if dep not in nodes:
+                errors.append(f"node '{name}': unknown soft_dep '{dep}'")
         if node.type == NodeType.CLAUDE and not node.prompt:
             errors.append(f"node '{name}': claude node requires 'prompt'")
         if node.type == NodeType.SHELL and not node.cmd:
             errors.append(f"node '{name}': shell node requires 'cmd'")
+        if node.role == Role.PRODUCE and not node.outputs:
+            from dage.tui import log
+            log(f"  warn: produce node '{name}' has no outputs declared")
     graph = {name: set(node.deps) for name, node in nodes.items()}
     try:
         ts = TopologicalSorter(graph)
@@ -94,15 +101,32 @@ def _resolve_path(ctx: dict, path: str) -> str:
                     text = text[:_max_output] + \
                         f"\n[truncated: {len(cur.output)} chars total]"
                 cur = text
-            elif part == "status": cur = cur.status.value
+            elif part == "status":    cur = cur.status.value
+            elif part == "changeset": cur = cur.changeset
+            elif part == "artifacts":
+                cur = "\n".join(a["path"] for a in cur.artifacts) if cur.artifacts else ""
             else: return f"<unresolved:{path}>"
         else:
             return f"<unresolved:{path}>"
     return str(cur) if cur is not None else ""
 
 def interpolate(template: str, ctx: dict) -> str:
-    """Replace ${...} references with values from context."""
-    return re.sub(r'\$\{([^}]+)\}', lambda m: _resolve_path(ctx, m.group(1)), template)
+    """Replace ${...} references with values from context.
+
+    Supports per-reference truncation: ${nodes.X.output:300} truncates to 300 chars.
+    """
+    def _replace(m: re.Match) -> str:
+        expr = m.group(1)
+        limit = 0
+        if ":" in expr:
+            expr, suffix = expr.rsplit(":", 1)
+            if suffix.isdigit():
+                limit = int(suffix)
+        text = _resolve_path(ctx, expr)
+        if limit and len(text) > limit:
+            text = text[:limit] + f"\n[…{len(text)} chars total]"
+        return text
+    return re.sub(r'\$\{([^}]+)\}', _replace, template)
 
 # ==== Topo Sort
 

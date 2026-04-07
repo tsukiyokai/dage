@@ -24,16 +24,24 @@ except ImportError:
 
 # ==== Constants
 
-_ANSI_COLORS = [36, 32, 33, 35, 34, 91, 96, 92, 93, 95]  # cyan,green,yellow,magenta,blue,...
+# wa-fu palette (256-color)
+#   sakura(218) fuji(141) wakatake(108) sora(110) shu(167)
+#   ukon(179)   ai(67)    momo(211)     matsu(65)  sumire(140)
+_ANSI_COLORS = [218, 141, 108, 110, 167, 179, 67, 211, 65, 140]
+_ANSI_FMT    = "\033[38;5;{}m"
 _ANSI_RESET  = "\033[0m"
 
 _STATUS_ICON = {
-    Status.SUCCESS: ("✓", "green"),
-    Status.RUNNING: ("◐", "yellow"),
-    Status.PENDING: ("○", "dim"),
-    Status.FAILED:  ("✗", "red"),
-    Status.SKIPPED: ("⊘", "dim"),
+    Status.SUCCESS: ("◆", "#7ba23f"),   # wakatake
+    Status.RUNNING: ("◇", "#f0c040"),   # ukon
+    Status.PENDING: ("·", "#6e7b91"),   # ai-nezumi
+    Status.FAILED:  ("✕", "#c73e3a"),   # shu
+    Status.SKIPPED: ("─", "#6e7b91"),   # ai-nezumi
 }
+
+# box-drawing separators
+_LINE_H = "─"
+_LINE_D = "━"
 
 # ==== Live Proxy
 
@@ -116,7 +124,7 @@ class DageDisplay:
                     dur = self._fmt_dur(time.monotonic() - t0)
                     parts.append(f"[{style}]{icon} {name} {dur}[/]")
                 elif r.status == Status.SUCCESS:
-                    parts.append(f"[green]{icon} {name}[/] [dim]{self._fmt_dur(r.duration)}[/]")
+                    parts.append(f"[{style}]{icon} {name}[/] [dim]{self._fmt_dur(r.duration)}[/]")
                 elif r.status == Status.FAILED:
                     parts.append(f"[{style}]{icon} {name}[/]")
                 else:
@@ -175,7 +183,7 @@ class DageDisplay:
         panel = Panel(body,
                       title=f"[bold] {desc} [/]",
                       subtitle=f"[dim] {done}/{total} ── {self._fmt_dur(elapsed)} [/]",
-                      border_style="blue", padding=(0, 1))
+                      border_style="#6e7b91", padding=(0, 1))  # ai-nezumi (grey-blue)
 
         try:
             term_h = os.get_terminal_size().lines
@@ -221,7 +229,7 @@ def log_line(name: str, line: str):
         log(f"\033[2m  {name:>18} │ {line}{_ANSI_RESET}")
     else:
         c = _ANSI_COLORS[hash(name) % len(_ANSI_COLORS)]
-        log(f"  \033[{c}m{name:>15}{_ANSI_RESET} │ {line}")
+        log(f"  {_ANSI_FMT.format(c)}{name:>15}{_ANSI_RESET} │ {line}")
 
 # ==== Duration Formatting
 
@@ -235,27 +243,27 @@ def _fmt_dur(s: float) -> str:
 # ==== Print Helpers
 
 def print_summary(results: dict[str, NodeResult]):
-    log("=" * 60)
+    log(_LINE_D * 60)
     log(f"{'Node':<20} {'Status':<10} {'Time':>8}  {'Retries':>7}")
-    log("-" * 60)
+    log(_LINE_H * 60)
     total_time = 0.0
     counts: dict[str, int] = {}
     for name, r in results.items():
         s = r.status.value
+        icon, _ = _STATUS_ICON.get(r.status, (" ", ""))
         counts[s] = counts.get(s, 0) + 1
         total_time += r.duration
-        log(f"{name:<20} {s:<10} {_fmt_dur(r.duration):>8}  {r.retries:>7}")
-    log("-" * 60)
+        log(f"{icon} {name:<18} {s:<10} {_fmt_dur(r.duration):>8}  {r.retries:>7}")
+    log(_LINE_H * 60)
     parts = [f"{v} {k}" for k, v in sorted(counts.items())]
-    log(f"total: {' / '.join(parts)}  time: {_fmt_dur(total_time)}")
-    log("=" * 60)
+    log(f"  {' / '.join(parts)}  {_fmt_dur(total_time)}")
+    log(_LINE_D * 60)
 
 def print_plan(nodes: dict[str, Node]):
     layers = topo_layers(nodes)
-    log("Execution plan:")
-    log("")
+    log("Execution plan:\n")
     for i, layer in enumerate(layers):
-        log(f"  layer {i}:")
+        log(f"  {_LINE_H * 2} layer {i} {_LINE_H * 40}")
         for name in layer:
             node = nodes[name]
             deps  = f" <- [{', '.join(node.deps)}]" if node.deps else ""
@@ -264,16 +272,22 @@ def print_plan(nodes: dict[str, Node]):
     log("")
 
 def print_status(run_dir: str):
-    state_file = os.path.join(run_dir, "results.json")
-    if not os.path.exists(state_file):
+    # prefer manifest.json (lightweight), fallback to results.json (old runs)
+    manifest_file = os.path.join(run_dir, "manifest.json")
+    results_file  = os.path.join(run_dir, "results.json")
+    if os.path.exists(manifest_file):
+        with open(manifest_file) as f:
+            data = json.load(f)["nodes"]
+    elif os.path.exists(results_file):
+        with open(results_file) as f:
+            data = json.load(f)
+    else:
         log("no results found")
         return
-    with open(state_file) as f:
-        data = json.load(f)
     log(f"latest run: {os.path.basename(run_dir)}")
     log("")
     log(f"{'Node':<20} {'Status':<10} {'Time':>8}  {'Retries':>7}")
-    log("-" * 60)
+    log(_LINE_H * 60)
     for name, r in data.items():
-        log(f"{name:<20} {r['status']:<10} {_fmt_dur(r['duration']):>8}  {r['retries']:>7}")
-    log("-" * 60)
+        log(f"  {name:<18} {r['status']:<10} {_fmt_dur(r['duration']):>8}  {r.get('retries', 0):>7}")
+    log(_LINE_H * 60)

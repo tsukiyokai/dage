@@ -1,0 +1,12 @@
+nodes:
+  a:
+    type: shell
+    cmd: "sleep 2 && echo done-a"
+  b:
+    type: shell
+    soft_deps: [a]
+    cmd: "sleep 1 && echo done-b"
+  c:
+    type: shell
+    deps: [a, b]
+    cmd: "echo done-c"
