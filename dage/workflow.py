@@ -188,7 +188,7 @@ def extract_yaml(text: str) -> str:
         start = None
         for i, line in enumerate(lines):
             s = line.strip()
-            if (s and ":" in s and not s.startswith("`")) or s.startswith("---"):
+            if s.startswith("---") or re.match(r'^[a-zA-Z_]\w*:', s):
                 start = i
                 break
         if start is None:

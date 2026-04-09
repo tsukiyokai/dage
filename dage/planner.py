@@ -35,7 +35,9 @@ def _generate_yaml(design: str, description: str, skill_ctx: str = "") -> str | 
         f"\nDesign document:\n{design}\n\n"
         f"Original task: {description}\n\n"
         "OUTPUT CONSTRAINT: Your entire response is piped directly into a YAML parser. "
-        "First line must be 'nodes:'. No preamble, no commentary, no Insight blocks, no markdown."
+        "First line must be a valid YAML key (e.g. 'nodes:' or 'defaults:'). "
+        "FORBIDDEN in output: backticks, Insight blocks, Chinese text, commentary, markdown fences. "
+        "RAW YAML ONLY — nothing before, nothing after."
     )
     raw = call_claude(gen_prompt, timeout=1800, system=skill_ctx)
     try:
