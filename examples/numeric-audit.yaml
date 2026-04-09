@@ -1,0 +1,68 @@
+# numeric-audit.yaml — claude gate for numeric consistency between docs and code
+# Usage: dage run examples/numeric-audit.yaml --repo-dir /path/to/project
+#
+# This workflow implements a design doc -> implement -> test -> numeric audit pipeline.
+# The numeric_audit node is a claude gate that cross-checks all quantitative claims
+# in design docs against the actual implementation.
+
+description: "Implementation with numeric consistency audit"
+max_gate_efforts: 3  # retry up to 3 times if audit finds mismatches
+
+nodes:
+  scan:
+    role: context
+    prompt: |
+      Scan the codebase structure: key modules, config files, and any design docs.
+      Focus on files that contain numerical specifications (limits, sizes, timeouts,
+      thresholds, capacities).
+
+  implement:
+    role: produce
+    deps: [scan]
+    prompt: |
+      Implement the feature based on the design document.
+      Codebase context: ${nodes.scan.output}
+    outputs: ["src/**/*.py"]
+
+  test:
+    role: gate
+    type: shell
+    deps: [implement]
+    cmd: "pytest -x"
+
+  numeric_audit:
+    role: gate
+    type: claude
+    deps: [test]
+    prompt: |
+      Numeric consistency audit.
+
+      Read every file listed below and extract ALL quantitative claims: sizes, counts,
+      thresholds, timeouts, capacities, percentages, bandwidths, rates, limits, etc.
+      Then cross-check each claim against the implementation.
+
+      Sources to audit:
+      - docs/design.md (design specifications — the source of truth)
+      - src/ (implementation code)
+      - Implementation summary: ${nodes.implement.output:500}
+
+      Rules:
+      1. Extract numbers from BOTH sides (docs and code). Include the exact location
+         (file:line) for every value found.
+      2. For each doc-side number, find its code-side counterpart. Infer correspondence
+         from context (variable names, comments, surrounding logic). Account for unit
+         conversions (e.g. 30s in doc vs 30000ms in code = consistent).
+      3. Report each pair as MATCH or MISMATCH with both values and locations.
+      4. Numbers that appear only on one side are UNVERIFIED — list them separately.
+      5. If all pairs MATCH and no MISMATCH exists: signal completion (gate passes).
+         If any MISMATCH exists: write full report to notes, do NOT signal completion
+         (gate fails, triggering the multi-round recovery loop).
+
+  report:
+    role: meta
+    deps: [numeric_audit]
+    prompt: |
+      Summarize: implementation status, test results, and numeric audit findings.
+      Test: ${nodes.test.status}
+      Audit: ${nodes.numeric_audit.status}
+      Audit findings: ${nodes.numeric_audit.output:1000}

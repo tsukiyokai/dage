@@ -104,6 +104,38 @@ Instructions:
 5. Run the gate command yourself to verify
 """
 
+NUMERIC_AUDIT_PROMPT = """Numeric consistency audit.
+
+Read every file listed below and extract ALL quantitative claims: sizes, counts,
+thresholds, timeouts, capacities, percentages, bandwidths, rates, limits, etc.
+Then cross-check each claim against the implementation (code, config, or other docs).
+
+Sources to audit:
+{sources}
+
+Rules:
+1. Extract numbers from BOTH sides (docs and code). Include the exact location
+   (file:line) for every value found.
+2. For each doc-side number, find its code-side counterpart. Infer the correspondence
+   from context (variable names, comments, surrounding logic). Account for unit
+   conversions (e.g. 30s in doc vs 30000ms in code = consistent).
+3. Report each pair as MATCH or MISMATCH with both values and locations.
+4. Numbers that appear only on one side (doc but not code, or code but not doc) are
+   UNVERIFIED -- list them separately.
+5. If all pairs are MATCH and no MISMATCH exists: signal completion (= gate passes).
+   If any MISMATCH exists: write the full mismatch table to notes, do NOT signal
+   completion (= gate fails).
+
+Output format (in notes):
+  ## Numeric Audit Results
+  ### Matches
+  - [file:line] value == [file:line] value  (description)
+  ### Mismatches
+  - [file:line] value != [file:line] value  (description, impact)
+  ### Unverified
+  - [file:line] value  (no counterpart found)
+"""
+
 # ==== DAGE_KNOWLEDGE must precede PLAN_PROMPT / BRAINSTORM_PROMPT (they reference it)
 
 DAGE_KNOWLEDGE = """How dage works:
@@ -130,6 +162,9 @@ ccx prompt writing guide:
     10+   cap for complex tasks (usually unnecessary with completion signal)
 - For simple info gathering: use `type: shell` with a command instead of ccx.
 - After implementation nodes, always add a shell gate node (cargo test, pytest, make).
+- For numeric consistency audits (cross-check numbers between design docs and code),
+  use a claude gate with role: gate. The agent reads both sides, extracts numbers,
+  and only signals completion if all values match.
 
 Node schema:
   <name>:
