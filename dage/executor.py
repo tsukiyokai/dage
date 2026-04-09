@@ -11,6 +11,8 @@ from dage.workflow import interpolate
 from dage.prompts import META_STYLE
 from dage.tui import log, log_line
 
+_CCX = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bin", "ccx")
+
 def _expand_braces(pattern: str) -> list[str]:
     """Expand bash-style {a,b,c} brace patterns into multiple strings."""
     m = re.search(r'\{([^}]+)\}', pattern)
@@ -188,7 +190,7 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
 
     notes_file = os.path.join(os.path.abspath(node_dir), "notes.md")
     cmd = [
-        "ccx",
+        _CCX,
         "-p",                  prompt,
         "-m",                  str(node.max_runs),
         "--completion-signal", "NODE_COMPLETE",
