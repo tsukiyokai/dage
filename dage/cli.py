@@ -136,16 +136,25 @@ def cmd_plan(args):
                     + (f" --skills {' '.join(args.skills)}" if args.skills else ""))
             sys.exit(1)
 
-        # always save design (phases 1-3 output) regardless of phase 4 result
+        # always save design + description regardless of phase 4 result
         plan_dir = os.path.join(".dage", "plans")
         os.makedirs(plan_dir, exist_ok=True)
         design_file = os.path.join(plan_dir, f"{ts}-design.md")
+        desc_file   = os.path.join(plan_dir, f"{ts}-desc.txt")
         with open(design_file, "w") as f:
             f.write(f"# Design: {desc[:80]}\n\n{design}\n")
+        with open(desc_file, "w") as f:
+            f.write(desc)
         log(f"  design: {design_file}")
 
     if raw is None:
         log("error: YAML generation failed (see above)")
+        df = args.from_design or design_file
+        # use persisted desc file if available, otherwise quote the original arg
+        desc_arg = desc_file if not args.from_design and os.path.exists(desc_file) \
+                   else f'"{args.description}"'
+        skills_flag = f" --skills {' '.join(args.skills)}" if args.skills else ""
+        log(f"\nretry: dage plan {desc_arg} --from-design {df}{skills_flag}")
         sys.exit(1)
 
     # validate generated YAML (semantic check)
