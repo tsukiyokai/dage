@@ -54,9 +54,10 @@ nodes:
          conversions (e.g. 30s in doc vs 30000ms in code = consistent).
       3. Report each pair as MATCH or MISMATCH with both values and locations.
       4. Numbers that appear only on one side are UNVERIFIED — list them separately.
-      5. If all pairs MATCH and no MISMATCH exists: signal completion (gate passes).
-         If any MISMATCH exists: write full report to notes, do NOT signal completion
-         (gate fails, triggering the multi-round recovery loop).
+      5. Write findings to notes, then write the verdict on the last line:
+         - All consistent: GATE_PASS
+         - Any mismatch: GATE_FAIL
+         (GATE_FAIL triggers the multi-round recovery loop)
 
   report:
     role: meta

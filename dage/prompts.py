@@ -122,9 +122,9 @@ Rules:
 3. Report each pair as MATCH or MISMATCH with both values and locations.
 4. Numbers that appear only on one side (doc but not code, or code but not doc) are
    UNVERIFIED -- list them separately.
-5. If all pairs are MATCH and no MISMATCH exists: signal completion (= gate passes).
-   If any MISMATCH exists: write the full mismatch table to notes, do NOT signal
-   completion (= gate fails).
+5. Write your findings to notes in the format below, then write the verdict:
+   - All pairs MATCH, no MISMATCH: write GATE_PASS on the last line.
+   - Any MISMATCH exists: write GATE_FAIL on the last line.
 
 Output format (in notes):
   ## Numeric Audit Results
@@ -134,6 +134,8 @@ Output format (in notes):
   - [file:line] value != [file:line] value  (description, impact)
   ### Unverified
   - [file:line] value  (no counterpart found)
+
+  GATE_PASS  (or GATE_FAIL)
 """
 
 # ==== DAGE_KNOWLEDGE must precede PLAN_PROMPT / BRAINSTORM_PROMPT (they reference it)
@@ -162,9 +164,9 @@ ccx prompt writing guide:
     10+   cap for complex tasks (usually unnecessary with completion signal)
 - For simple info gathering: use `type: shell` with a command instead of ccx.
 - After implementation nodes, always add a shell gate node (cargo test, pytest, make).
-- For numeric consistency audits (cross-check numbers between design docs and code),
-  use a claude gate with role: gate. The agent reads both sides, extracts numbers,
-  and only signals completion if all values match.
+- Claude gates use a verdict protocol: the agent writes GATE_PASS or GATE_FAIL
+  in its notes. No verdict = gate fails (conservative). Use claude gates for
+  semantic verification (numeric audits, design-code consistency, etc.).
 
 Node schema:
   <name>:

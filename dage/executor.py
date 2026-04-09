@@ -20,6 +20,18 @@ def _expand_braces(pattern: str) -> list[str]:
     return [ep for alt in m.group(1).split(',')
             for ep in _expand_braces(prefix + alt + suffix)]
 
+def _parse_gate_verdict(notes: str) -> str:
+    """Extract GATE_PASS / GATE_FAIL verdict from claude gate notes.
+
+    Returns "PASS", "FAIL", or "" if no verdict found.
+    """
+    if re.search(r'\bGATE_FAIL\b', notes):
+        return "FAIL"
+    if re.search(r'\bGATE_PASS\b', notes):
+        return "PASS"
+    return ""
+
+
 # ==== Process Tracking
 
 _active_procs: list[subprocess.Popen] = []
@@ -329,6 +341,20 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
                     log(f"  [{node.name}] produce: no outputs, no notes, no code changes")
                     result.status = Status.FAILED
                     result.output = "[empty output] agent completed but produced no changes"
+                    return result
+
+            # claude gate: check notes for GATE_PASS / GATE_FAIL verdict
+            if node.role == Role.GATE and node.type == NodeType.CLAUDE:
+                verdict = _parse_gate_verdict(result.output)
+                if verdict == "FAIL":
+                    result.status = Status.FAILED
+                    log(f"  [{node.name}] claude gate: GATE_FAIL in notes")
+                    return result
+                elif verdict != "PASS":
+                    # no explicit verdict — treat as failure (conservative)
+                    result.status = Status.FAILED
+                    result.output += "\n[no verdict] claude gate must output GATE_PASS or GATE_FAIL"
+                    log(f"  [{node.name}] claude gate: no GATE_PASS/GATE_FAIL verdict")
                     return result
 
             # context/claude: need notes
