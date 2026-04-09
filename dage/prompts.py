@@ -68,7 +68,7 @@ Changeset from upstream produce nodes:
 
 Output files status:
 {file_status}
-
+{previous_attempts}
 Classify this failure into exactly ONE category. Put the tag on the FIRST LINE of your response:
 
 [LOCAL_FIX]
@@ -249,48 +249,60 @@ Output format: raw YAML only (see constraint after task).
 
 Task: """
 
-BRAINSTORM_PROMPT = """You are a dage DAG architect. Map work streams into a dage-specific
-DAG structure. The work streams below are already decomposed — your job is to translate
-them into dage's node/role/dependency model, not to re-decompose.
-PLANNING ONLY: design the DAG topology — do NOT implement, create files, or write code.
+BRAINSTORM_PROMPT = """You are a dage DAG architect. Your job is to map work streams into a
+dage-specific DAG structure. PLANNING ONLY — do NOT implement, create files, or write code.
 Make all decisions autonomously.
 
 """ + DAGE_KNOWLEDGE.replace("{{", "{").replace("}}", "}") + """
 
-For each work stream, decide:
+Use Socratic self-questioning to explore the DAG design space before committing.
+Do NOT jump to the obvious 1:1 mapping. Think first, then build.
 
-1. NODE MAPPING: One work stream typically becomes:
-   - A `claude` node (the implementation work — AI agent with full codebase access)
-   - A `shell` gate node (the verification command from the work stream)
-   If a stream needs codebase context first, add a `context` node before it.
-   If the workflow needs a final summary, add a `meta` node at the end.
-   If implementation modifies error handling or control flow, add a `claude` gate
-   after the shell gate. Prompt: trace every error/exception path through the changed
-   code — verify caught types match what callees raise, no state lost on failure paths,
-   no downstream code reads state that a failure path leaves unset.
+Process:
 
-2. CLASSIFY each node:
-   - type: `claude` (AI reasoning/analysis/coding) or `shell` (deterministic command)
-   - role: `context` (gather info, read-only), `produce` (create/modify artifacts),
-     `gate` (verify — failure blocks all downstream), `meta` (report/summarize)
+1. QUESTION ASSUMPTIONS: Before mapping anything, interrogate the work streams.
+   - Are any streams actually the same work described differently? Merge them.
+   - Are any streams hiding two independent concerns? Split them.
+   - Which dependencies are real constraints vs. arbitrary ordering?
+   - What would break if you removed a dependency? If nothing, remove it.
 
-3. DEPENDENCIES: Map the work stream dependencies to node deps. Also add deps from
-   each gate to its corresponding produce node. Be precise — only add a dependency
-   when node B actually reads node A's output via ${nodes.A.output}.
+2. EXPLORE TOPOLOGIES: Consider at least two different DAG shapes.
+   - The maximally parallel version (fewest deps) — what risks does it introduce?
+   - The maximally safe version (more gates, tighter deps) — what parallelism does it sacrifice?
+   - Where is the right tradeoff for THIS specific set of work streams?
+   Surface the tradeoff explicitly, then decide.
 
-4. NODE PROMPTS: For claude nodes, the prompt is a GOAL, not a script.
+3. CHALLENGE YOUR DESIGN: Before finalizing, ask yourself:
+   - Is any node doing too much? (If a prompt exceeds ~10 lines of goal description,
+     the scope is probably too broad for one agent session.)
+   - Is any node too trivial to justify a separate claude session? Merge it.
+   - Are there failure modes that no gate catches?
+   - If implementation modifies error handling or control flow, is there a claude gate
+     that traces error/exception paths through the changed code?
+
+4. COMMIT TO THE DESIGN: Now map each work stream to nodes.
+   Node types and roles:
+   - `claude` node: AI reasoning/analysis/coding. Roles: `context` (gather info, read-only),
+     `produce` (create/modify artifacts), `meta` (report/summarize)
+   - `shell` node: deterministic command. Typical role: `gate` (verify — failure blocks
+     all downstream)
+   For each claude node, the prompt is a GOAL, not a script:
    - State what to achieve + what upstream context to use
    - Do NOT prescribe implementation steps — the agent decides in context
    - Inject upstream context via ${nodes.NAME.output}
    - Do NOT include mechanism instructions (e.g. "write findings to notes file",
      "signal completion") — the runtime auto-injects these
+   Dependencies: only add when node B actually reads node A's output or requires A to
+   succeed first. Every produce node needs a gate.
 
 5. RESOURCE ESTIMATE: For each claude node, default max_runs = 0 (unlimited,
    completion-signal-driven). Only cap to limit cost:
    - Context/read-only tasks: max_runs 1-3
    - Implementation tasks: usually leave unlimited (0)
 
-Output the COMPLETE DAG design in your response. Do not summarize — the full design IS the output. For each node: name, type, role, deps, prompt/cmd.
+Output format: show your questioning and tradeoff reasoning FIRST (this is valuable
+context for downstream phases), then the COMPLETE DAG design. For each node: name,
+type, role, deps, prompt/cmd.
 
 Work streams: """
 

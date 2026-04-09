@@ -207,18 +207,34 @@ def _parse_reflection(output: str, valid_upstreams: list[str]) -> tuple[str, str
 
 def _reflect_on_gate_failure(gate: Node, gate_result: NodeResult,
                              nodes: dict[str, Node], results: dict[str, NodeResult],
-                             ctx: dict, wf: dict,
-                             run_dir: str, run_id: str,
-                             repo_dir: str) -> tuple[str, str | None, NodeResult]:
-    """Analyze gate failure, classify root cause, attempt fix if LOCAL_FIX.
+                             ctx: dict, wf: dict, run_dir: str, run_id: str,
+                             repo_dir: str,
+                             history: list[dict] | None = None,
+                             ) -> tuple[str, str | None, NodeResult]:
+    """Reflect on gate failure, classify root cause, attempt fix if LOCAL_FIX.
 
-    Returns (action, detail, fix_result):
-        action: "LOCAL_FIX" | "REPLAN" | "RERUN"
-        detail: None | reason | node_name
-        fix_result: result of retry gate (only meaningful for LOCAL_FIX)
+    Returns:
+        (action, detail, fix_result) where action is LOCAL_FIX/REPLAN/RERUN.
     """
     gc = _build_gate_context(gate, gate_result, nodes, results, ctx, run_dir, repo_dir)
-    prompt = REFLECT_PROMPT.format(**{k: gc[k] for k in gc if k != "upstream_names"})
+
+    # format history for prompt
+    prev = ""
+    if history:
+        lines = []
+        for i, h in enumerate(history, 1):
+            entry = f"  Attempt {i}: {h['action']}"
+            if h.get("error"):
+                entry += f" -> FAILED: {h['error'][:500]}"
+            if h.get("note"):
+                entry += f" ({h['note']})"
+            lines.append(entry)
+        prev = ("Previous attempts (do NOT repeat the same approach):\n"
+                + "\n".join(lines) + "\n\n")
+
+    prompt = REFLECT_PROMPT.format(
+        **{k: gc[k] for k in gc if k != "upstream_names"},
+        previous_attempts=prev)
 
     defaults = wf.get("defaults", {})
     reflect_node = Node(
@@ -247,16 +263,17 @@ def _reflect_on_gate_failure(gate: Node, gate_result: NodeResult,
 
 def _backtrack_node(target: str, gate_name: str,
                     nodes: dict[str, Node], results: dict[str, NodeResult],
-                    run_dir: str, rerun_counts: dict[str, int]) -> bool:
-    """Reset a node to PENDING for re-execution. Max 1 rerun per node."""
+                    run_dir: str, rerun_counts: dict[str, int],
+                    max_reruns: int = 1) -> bool:
+    """Reset a node to PENDING for re-execution."""
     if target not in nodes:
         log(f"[backtrack] '{target}' not found")
         return False
     if target not in nodes[gate_name].deps:
         log(f"[backtrack] '{target}' is not a dep of gate '{gate_name}'")
         return False
-    if rerun_counts.get(target, 0) >= 1:
-        log(f"[backtrack] '{target}' already re-run once")
+    if rerun_counts.get(target, 0) >= max_reruns:
+        log(f"[backtrack] '{target}' already re-run {max_reruns} time(s)")
         return False
 
     rerun_counts[target] = rerun_counts.get(target, 0) + 1
@@ -377,45 +394,88 @@ def _handle_produce_fail(name: str, nodes: dict[str, Node], results: dict[str, N
     return replan_count
 
 
-# ==== Gate Failure
+# ==== Gate Failure (multi-round recovery)
 
-def _handle_gate_fail(name: str, nodes: dict[str, Node], results: dict[str, NodeResult],
-                      blocked: set[str], reflected: set[str], cfg: dict,
-                      ctx: dict, wf: dict, run_dir: str, run_id: str,
-                      repo_dir: str, replan_count: int,
-                      rerun_counts: dict[str, int]) -> int:
-    """Handle failed gate: reflect → classify → act. Returns updated replan_count."""
-    if cfg["autofix"] and name not in reflected:
-        reflected.add(name)
-        action, detail, retry = _reflect_on_gate_failure(
-            nodes[name], results[name], nodes, results,
-            ctx, wf, run_dir, run_id, repo_dir)
-
-        if action == "LOCAL_FIX" and retry.status == Status.SUCCESS:
-            results[name] = retry
-            log(f"[{name}] gate passed after reflection fix")
-            return replan_count
-
-        if action == "REPLAN" and detail:
-            return _trigger_gate_replan(
-                name, detail, nodes, results, blocked,
-                wf, run_dir, cfg, replan_count)
-
-        if action == "RERUN" and detail:
-            if _backtrack_node(detail, name, nodes, results, run_dir, rerun_counts):
-                results[name] = NodeResult()    # reset gate
-                reflected.discard(name)          # allow re-reflection
-                return replan_count
-
-    # fallback: block downstream
+def _block_downstream(name: str, nodes, results, blocked):
+    """Block all downstream nodes of a failed gate."""
     downstream = find_blocked(nodes, name)
     blocked |= downstream
-    log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
     for b in downstream:
         if results.get(b, NodeResult()).status == Status.PENDING:
             results[b] = NodeResult(status=Status.SKIPPED,
                                     output="blocked by failed gate")
             log(f"[{b}] SKIPPED (gate)")
+    log(f"[{name}] gate failed -> blocking {sorted(downstream)}")
+
+
+def _handle_gate_fail(name: str, nodes: dict[str, Node], results: dict[str, NodeResult],
+                      blocked: set[str], gate_efforts: dict[str, list[dict]], cfg: dict,
+                      ctx: dict, wf: dict, run_dir: str, run_id: str,
+                      repo_dir: str, replan_count: int,
+                      rerun_counts: dict[str, int]) -> int:
+    """Handle failed gate with multi-round retry loop.
+
+    Each round: reflect → classify (LOCAL_FIX / REPLAN / RERUN) → act.
+    History accumulates across rounds so the LLM learns from prior failures.
+    """
+    max_efforts = cfg.get("max_gate_efforts", 3)
+
+    if not cfg["autofix"] or max_efforts <= 0:
+        _block_downstream(name, nodes, results, blocked)
+        return replan_count
+
+    history = gate_efforts.setdefault(name, [])
+
+    while len(history) < max_efforts:
+        seq = len(history) + 1
+        log(f"[{name}] gate recovery {seq}/{max_efforts}")
+
+        action, detail, retry = _reflect_on_gate_failure(
+            nodes[name], results[name], nodes, results,
+            ctx, wf, run_dir, run_id, repo_dir,
+            history=history)
+
+        # LOCAL_FIX: reflection already attempted a patch, retry gate cmd
+        if action == "LOCAL_FIX":
+            if retry.status == Status.SUCCESS:
+                results[name] = retry
+                history.append({"action": "LOCAL_FIX", "resolved": True})
+                log(f"[{name}] gate passed after LOCAL_FIX (effort {seq})")
+                return replan_count
+            history.append({"action": "LOCAL_FIX",
+                            "error": (retry.output or "")[-1500:]})
+            results[name] = retry
+            continue
+
+        # REPLAN: restructure the graph
+        if action == "REPLAN" and detail:
+            nodes_before = set(nodes.keys())
+            rc = _trigger_gate_replan(
+                name, detail, nodes, results, blocked,
+                wf, run_dir, cfg, replan_count)
+            if set(nodes.keys()) != nodes_before:
+                results[name] = NodeResult()  # reset gate
+                history.append({"action": f"REPLAN: {detail}"})
+                return rc
+            history.append({"action": f"REPLAN: {detail}", "error": "DAG unchanged"})
+            replan_count = rc
+            continue
+
+        # RERUN: re-execute an upstream dep
+        if action == "RERUN" and detail:
+            if _backtrack_node(detail, name, nodes, results, run_dir,
+                               rerun_counts, max_reruns=max_efforts):
+                history.append({"action": f"RERUN:{detail}"})
+                results[name] = NodeResult()  # reset gate to PENDING
+                return replan_count
+            history.append({"action": f"RERUN:{detail}", "error": "backtrack rejected"})
+            continue
+
+        # catch-all guard
+        history.append({"action": action or "UNKNOWN", "error": "unhandled"})
+
+    log(f"[{name}] exhausted {len(history)} recovery attempts")
+    _block_downstream(name, nodes, results, blocked)
     return replan_count
 
 # ==== Hot Reload
@@ -475,7 +535,8 @@ def _reload_config(wf: dict) -> dict:
         "max_nodes":    replan_cfg.get("max_nodes", 50),
         "do_commit":    bool(commit_cfg) if isinstance(commit_cfg, dict) else bool(commit_cfg),
         "do_push":      commit_cfg.get("push", False) if isinstance(commit_cfg, dict) else False,
-        "autofix":      wf.get("autofix", True),
+        "autofix":          wf.get("autofix", True),
+        "max_gate_efforts": wf.get("max_gate_efforts", 3),
     }
 
 # ==== Replan Handling
@@ -539,7 +600,8 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     results: dict[str, NodeResult] = {name: NodeResult() for name in nodes}
     blocked: set[str] = set()
     reflected:    set[str]              = set()
-    rerun_counts: dict[str, int]       = {}
+    rerun_counts: dict[str, int]        = {}
+    gate_efforts: dict[str, list[dict]] = {}
     discoveries:  list[tuple[str, str]] = []
     cfg = _reload_config(wf)
 
@@ -662,7 +724,7 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                         elif node.role == Role.GATE and r.status == Status.FAILED:
                             replan_count = _handle_gate_fail(
                                 name, nodes, results, blocked,
-                                reflected, cfg, ctx, wf,
+                                gate_efforts, cfg, ctx, wf,
                                 run_dir, run_id, repo_dir,
                                 replan_count, rerun_counts)
                         elif node.role == Role.GATE and r.status == Status.SUCCESS:
@@ -709,6 +771,8 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
             set_display(None)
 
     save_state(run_dir, results)
+    if gate_efforts:
+        save_json(os.path.join(run_dir, "gate-efforts.json"), gate_efforts)
     prune_worktrees(repo_dir)
 
     # clean up ccx residuals
