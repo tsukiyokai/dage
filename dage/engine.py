@@ -154,16 +154,12 @@ def _build_gate_context(gate: Node, gate_result: NodeResult,
         f"[{d}] goal: {nodes[d].prompt[:2000]}"
         for d in gate.deps if d in nodes and nodes[d].prompt)
 
-    # read changesets from .patch files
+    # changesets: use @path for file injection (Claude CLI expands it)
     changeset_parts = []
     for d in gate.deps:
         patch_path = os.path.join(node_artifact_dir(run_dir, d), "patch")
         if os.path.exists(patch_path):
-            with open(patch_path) as f:
-                p = f.read()
-            if len(p) > 5000:
-                p = p[:5000] + f"\n... ({len(p)} chars total)"
-            changeset_parts.append(f"=== {d} ===\n{p}")
+            changeset_parts.append(f"=== {d} ===\n@{os.path.abspath(patch_path)}")
         elif d in results and results[d].changeset:
             changeset_parts.append(f"=== {d} (stat only) ===\n{results[d].changeset}")
 
