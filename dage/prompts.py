@@ -280,7 +280,9 @@ Rules:
 - context nodes gather info, produce nodes create artifacts, gate nodes verify
 - every produce node MUST declare `outputs` — glob patterns for expected artifacts (e.g. "src/**/*.py", "report/*.md")
 - shell for deterministic commands (git/test/build), claude for reasoning/analysis/coding
-- short descriptive snake_case node names
+- node names describe WHAT the node does, not its role. The role field already carries
+  that info. Bad: ctx_callchain, produce_phase1, gate_ctx. Good: trace_callchain,
+  impl_fmoe03_05, check_analyses. Short descriptive snake_case.
 
 Output format: raw YAML only (see constraint after task).
 
@@ -331,6 +333,8 @@ Process:
      "signal completion") — the runtime auto-injects these
    Dependencies: only add when node B actually reads node A's output or requires A to
    succeed first. Every produce node needs a gate.
+   Naming: describe WHAT the node does, not its role (role field carries that).
+   Bad: ctx_callchain, produce_phase1. Good: trace_callchain, impl_fmoe03_05.
 
 5. RESOURCE ESTIMATE: For each claude node, default max_runs = 0 (unlimited,
    completion-signal-driven). Only cap to limit cost:
