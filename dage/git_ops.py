@@ -171,6 +171,29 @@ def prune_worktrees(repo_dir: str):
     if pruned:
         log(f"  pruned worktrees: {pruned}")
 
+# ==== Pre-run Snapshot
+
+def snapshot_before_run(repo_dir: str, run_id: str):
+    """Commit any uncommitted changes as a snapshot before a new run.
+
+    This preserves the previous iteration's artifacts in git history,
+    so the new run can overwrite files in-place and git diff shows the delta.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_dir, capture_output=True, text=True, timeout=10)
+        if r.returncode != 0 or not r.stdout.strip():
+            return  # not a git repo or nothing to commit
+        subprocess.run(
+            'git add -A -- . ":!.dage" && '
+            f'git commit -m "dage: snapshot before {run_id}"',
+            shell=True, cwd=repo_dir, capture_output=True, timeout=30)
+        log(f"[snapshot] committed pre-run state")
+    except Exception:
+        pass  # best-effort, don't block execution
+
+
 # ==== Gate Auto-commit
 
 def auto_commit(gate_name: str, nodes: dict[str, Node],

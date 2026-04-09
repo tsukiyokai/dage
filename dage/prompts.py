@@ -355,7 +355,10 @@ Anti-pattern: "This is too simple to need a design." Every project gets a design
 
 Process (execute all steps in one pass):
 
-1. EXPLORE CONTEXT: Mentally simulate checking the project state — what files, docs, existing patterns, and constraints likely exist? What's the current state of things?
+1. EXPLORE CONTEXT: Review the working directory file listing appended below (if any).
+   Existing artifacts are from previous iterations — treat them as CLUES (hints about
+   where to look and what to expect), not verified facts. Re-verify all hard facts
+   (file:line references, numbers, specs) against current source code before relying on them.
 
 2. SCOPE CHECK: Does this request describe multiple independent subsystems? If so, decompose into sub-projects first. Each sub-project gets its own design. Don't refine details of something that needs decomposition first.
 

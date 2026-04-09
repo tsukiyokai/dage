@@ -69,7 +69,7 @@ def generate_plan(description: str, skills: list[str] = None,
         log(f"  phase 1/4: cached ({len(mature)} chars)")
     else:
         log("  phase 1/4: maturing idea...")
-        mature = call_claude(MATURE_PROMPT + description,
+        mature = call_claude(MATURE_PROMPT + description + "\n\n@.",
                              timeout=1800, system=skill_full, readonly=True)
         _save_phase(ts, 1, "design", mature)
         log(f"  design: {len(mature)} chars")

@@ -18,7 +18,8 @@ from dage.workflow import (load_workflow, _build_one_node, build_nodes,
 from dage.executor import (execute_node, run_claude, run_shell,
                            kill_active_procs, register_signal_handlers,
                            call_claude)
-from dage.git_ops import merge_worktrees, prune_worktrees, auto_commit, default_branch
+from dage.git_ops import (merge_worktrees, prune_worktrees, auto_commit,
+                          default_branch, snapshot_before_run)
 from dage.replan import (call_replanner, apply_replan,
                          _format_replan_proposal, _confirm_replan)
 from dage.tui import (log, set_display, get_display, DageDisplay, _HAS_RICH,
@@ -596,6 +597,8 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
     run_id  = time.strftime("%Y%m%d-%H%M%S")
     run_dir = os.path.join(repo_dir, ".dage", "runs", run_id)
     os.makedirs(run_dir, exist_ok=True)
+
+    snapshot_before_run(repo_dir, run_id)
 
     results: dict[str, NodeResult] = {name: NodeResult() for name in nodes}
     blocked: set[str] = set()
