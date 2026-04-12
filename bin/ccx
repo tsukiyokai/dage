@@ -1508,6 +1508,10 @@ setup_worktree() {
         exit 1
     fi
 
+    # Capture subdirectory offset before switching to worktree
+    local git_prefix
+    git_prefix=$(git rev-parse --show-prefix 2>/dev/null)
+
     # Get the main repo directory
     local main_repo_dir=$(git rev-parse --show-toplevel)
     local worktree_path="${WORKTREE_BASE_DIR}/${WORKTREE_NAME}"
@@ -1563,6 +1567,12 @@ setup_worktree() {
     fi
 
     echo "✅ Worktree '$WORKTREE_NAME' ready at: $worktree_path" >&2
+
+    # Restore subdirectory offset within worktree (caller may run from a subdirectory)
+    if [ -n "$git_prefix" ] && [ -d "$git_prefix" ]; then
+        cd "$git_prefix"
+    fi
+
     return 0
 }
 
