@@ -209,63 +209,65 @@ def run_claude(node: Node, prompt: str, run_dir: str, run_id: str,
             cmd += ["--append-system-prompt", skill_content]
 
     t0 = time.monotonic()
+    timed_out = False
     try:
         timeout_s = _parse_timeout(node.timeout)
         outer_timeout = timeout_s + 120 if timeout_s else None
         rc, stdout, stderr = _run_streamed(
             node.name, cmd, cwd=repo_dir, timeout=outer_timeout,
         )
-        elapsed = time.monotonic() - t0
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        rc, stdout, stderr = -1, "", ""
+    elapsed = time.monotonic() - t0
 
-        notes_path = Path(notes_file)
-        notes = notes_path.read_text().strip() if notes_path.exists() else ""
+    # always read notes (agent may have written findings before timeout)
+    notes_path = Path(notes_file)
+    notes = notes_path.read_text().strip() if notes_path.exists() else ""
 
-        # extract changeset from worktree
-        patch = ""
-        diff_stat = ""
-        wt_dir = wt or node.worktree
-        if wt_dir:
-            from dage.git_ops import worktree_path, default_branch
-            wt_path = worktree_path(repo_dir, wt_dir)
-            if os.path.isdir(wt_path):
-                base = default_branch(repo_dir)
-                # commit any uncommitted changes first
-                subprocess.run(
-                    'git add -A && git diff --cached --quiet || '
-                    'git commit -m "dage: uncommitted changes"',
-                    shell=True, cwd=wt_path, capture_output=True, timeout=30)
-                # extract diff stat
-                r = subprocess.run(
-                    ["git", "diff", "--stat", f"{base}..HEAD"],
-                    cwd=wt_path, capture_output=True, text=True, timeout=30)
-                diff_stat = r.stdout.strip()
-                # extract full patch
-                r = subprocess.run(
-                    ["git", "diff", f"{base}..HEAD"],
-                    cwd=wt_path, capture_output=True, text=True, timeout=30)
-                patch = r.stdout.strip()
+    # always extract changeset from worktree
+    patch = ""
+    diff_stat = ""
+    wt_dir = wt or node.worktree
+    if wt_dir:
+        from dage.git_ops import worktree_root, default_branch
+        wt_root = worktree_root(repo_dir, wt_dir)
+        if os.path.isdir(wt_root):
+            base = default_branch(repo_dir)
+            subprocess.run(
+                'git add -A && git diff --cached --quiet || '
+                'git commit -m "dage: uncommitted changes"',
+                shell=True, cwd=wt_root, capture_output=True, timeout=30)
+            r = subprocess.run(
+                ["git", "diff", "--stat", f"{base}..HEAD"],
+                cwd=wt_root, capture_output=True, text=True, timeout=30)
+            diff_stat = r.stdout.strip()
+            r = subprocess.run(
+                ["git", "diff", f"{base}..HEAD"],
+                cwd=wt_root, capture_output=True, text=True, timeout=30)
+            patch = r.stdout.strip()
 
-        # save patch file
-        if patch:
-            patch_path = os.path.join(node_dir, "patch")
-            with open(patch_path, "w") as f:
-                f.write(patch)
+    if patch:
+        with open(os.path.join(node_dir, "patch"), "w") as f:
+            f.write(patch)
 
-        os.makedirs(node_dir, exist_ok=True)
+    if stdout or stderr:
         with open(os.path.join(node_dir, "ccx.log"), "w") as f:
             f.write(f"=== stdout ===\n{stdout}\n")
             f.write(f"=== stderr ===\n{stderr}\n")
             f.write(f"=== returncode: {rc} ===\n")
 
-        return NodeResult(
-            status    = Status.SUCCESS if rc == 0 else Status.FAILED,
-            output    = notes,
-            changeset = diff_stat,
-            duration  = elapsed,
-        )
-    except subprocess.TimeoutExpired:
-        return NodeResult(status=Status.FAILED, output="[timeout]",
-                          duration=time.monotonic() - t0)
+    if timed_out:
+        output = (notes + "\n[timeout]") if notes else "[timeout]"
+        return NodeResult(status=Status.FAILED, output=output,
+                          changeset=diff_stat, duration=elapsed)
+
+    return NodeResult(
+        status    = Status.SUCCESS if rc == 0 else Status.FAILED,
+        output    = notes,
+        changeset = diff_stat,
+        duration  = elapsed,
+    )
 
 # ==== Node Execution (retry wrapper)
 
@@ -274,6 +276,10 @@ def execute_node(node: Node, ctx: dict, run_dir: str, run_id: str,
                  worktree: str = "") -> NodeResult:
     if dry_run:
         return NodeResult(status=Status.SUCCESS, output="[dry-run]")
+
+    # resolve template variables in output patterns (once, before retry loop)
+    if node.outputs:
+        node.outputs = [interpolate(p, ctx) for p in node.outputs]
 
     last_result = NodeResult(status=Status.FAILED)
     max_attempts = 1 + node.retry

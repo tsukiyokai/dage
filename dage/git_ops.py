@@ -82,20 +82,38 @@ def worktree_path(repo_dir: str, wt_name: str) -> str:
     # 3) fallback for pre-creation
     return _apply_offset(legacy)
 
+
+def worktree_root(repo_dir: str, wt_name: str) -> str:
+    """Return worktree top-level directory (without subdirectory offset).
+
+    Unlike worktree_path() which maps repo_dir into the worktree,
+    this returns the worktree's git root. Use for git operations that
+    must capture the full worktree state (add, commit, diff).
+    """
+    root = _git_root(repo_dir)
+    legacy = os.path.join(root, ".dage", "worktrees", wt_name)
+    if os.path.isdir(legacy):
+        return os.path.realpath(legacy)
+    for wt in _list_worktrees(repo_dir):
+        bname = os.path.basename(wt["path"])
+        if bname.endswith(f"-wt-{wt_name}") or bname == wt_name:
+            return os.path.realpath(wt["path"])
+    return os.path.realpath(legacy)
+
 # ==== Worktree Merge
 
 def _merge_single_worktree(node_name: str, wt_name: str,
                            repo_dir: str) -> bool:
     """Merge one worktree branch back to main. Returns True on success."""
-    wt_path = worktree_path(repo_dir, wt_name)
-    if not os.path.isdir(wt_path):
+    wt_root = worktree_root(repo_dir, wt_name)
+    if not os.path.isdir(wt_root):
         return True
     branch = default_branch(repo_dir)
     try:
-        # commit worktree changes on its branch
+        # commit from worktree root to capture all changes (not just subdirectory)
         _run_streamed(
             f"_commit_{node_name}",
-            f'cd "{wt_path}" && git add -A && '
+            f'cd "{wt_root}" && git add -A && '
             f'git diff --cached --quiet || git commit -m "dage: {node_name}"',
             shell=True)
         # attempt merge
@@ -104,17 +122,15 @@ def _merge_single_worktree(node_name: str, wt_name: str,
             f'cd "{repo_dir}" && git merge --no-edit "{wt_name}"',
             shell=True)
         if rc != 0:
-            # conflict -- abort merge, preserve worktree for manual resolution
             _run_streamed(f"_abort_{node_name}",
                          f'cd "{repo_dir}" && git merge --abort 2>/dev/null; true',
                          shell=True)
-            log(f"  CONFLICT merging {node_name} — resolve in: {wt_path}")
+            log(f"  CONFLICT merging {node_name} — resolve in: {wt_root}")
             return False
         log(f"  merge: {node_name} -> {branch}")
-        # reset worktree to default branch HEAD for reuse next run
         _run_streamed(
             f"_reset_{node_name}",
-            f'cd "{wt_path}" && git checkout -B "{wt_name}" HEAD 2>/dev/null; '
+            f'cd "{wt_root}" && git checkout -B "{wt_name}" HEAD 2>/dev/null; '
             f'git reset --hard {branch} 2>/dev/null; true',
             shell=True)
         return True
