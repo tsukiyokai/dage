@@ -25,7 +25,7 @@ from dage.replan import (call_replanner, apply_replan,
 from dage.tui import (log, set_display, get_display, DageDisplay, _HAS_RICH,
                        print_summary)
 from dage.prompts import (AUTOFIX_PROMPT, ANNOTATE_PROMPT, REFLECT_PROMPT,
-                          PRODUCE_REFLECT_PROMPT,
+                          PRODUCE_REFLECT_PROMPT, CONTEXT_REFLECT_PROMPT,
                           LONG_REPORT_PROMPT, SHORT_REPORT_PROMPT)
 
 # ==== Execution Context
@@ -62,6 +62,8 @@ def _surface_outputs_from_worktree(node: Node, wt_name: str,
         return []
     surfaced: list[str] = []
     for pattern in node.outputs:
+        if os.path.isabs(pattern):
+            continue  # absolute paths live outside repo, no surfacing needed
         for src in sorted(_glob.glob(os.path.join(wt_path, pattern),
                                       recursive=True)):
             if not os.path.isfile(src):
@@ -80,9 +82,9 @@ def _collect_artifacts(node: Node, repo_dir: str) -> list[dict]:
     artifacts: list[dict] = []
     seen: set[str] = set()
     for pattern in node.outputs:
-        for path in sorted(_glob.glob(os.path.join(repo_dir, pattern),
-                                      recursive=True)):
-            rel = os.path.relpath(path, repo_dir)
+        glob_base = pattern if os.path.isabs(pattern) else os.path.join(repo_dir, pattern)
+        for path in sorted(_glob.glob(glob_base, recursive=True)):
+            rel = path if os.path.isabs(pattern) else os.path.relpath(path, repo_dir)
             if rel in seen or not os.path.isfile(path):
                 continue
             seen.add(rel)
@@ -391,7 +393,62 @@ def _handle_produce_fail(name: str, nodes: dict[str, Node], results: dict[str, N
     return replan_count
 
 
-# ==== Gate Failure (multi-round recovery)
+# ==== Context Failure (empty notes recovery)
+
+def _handle_context_fail(name: str, nodes: dict[str, Node],
+                         results: dict[str, NodeResult],
+                         reflected: set, wf: dict, run_dir: str,
+                         run_id: str, repo_dir: str):
+    """Handle failed context node: reflect → retry_focused / skip."""
+    if name in reflected:
+        return
+    reflected.add(name)
+
+    node = nodes[name]
+    ccx_log_path = os.path.join(node_artifact_dir(run_dir, name), "ccx.log")
+    ccx_log = ""
+    if os.path.exists(ccx_log_path):
+        with open(ccx_log_path) as f:
+            ccx_log = f.read()[-3000:]
+
+    from dage.prompts import CONTEXT_REFLECT_PROMPT
+    prompt = CONTEXT_REFLECT_PROMPT.format(
+        node_name       = name,
+        original_prompt = (node.prompt or "")[:2000],
+        ccx_log         = ccx_log or "(no log)",
+    )
+
+    defaults = wf.get("defaults", {})
+    reflect_node = Node(
+        name=f"_reflect_ctx_{name}", type=node.type, role=Role.META,
+        prompt=prompt, timeout="10m",
+        skills=defaults.get("skills", []),
+    )
+    log(f"[_reflect_ctx_{name}] analyzing empty context output ...")
+    result = run_claude(reflect_node, prompt, run_dir, run_id, repo_dir)
+    log(f"[_reflect_{name}] {result.duration:.0f}s")
+
+    output = result.output or ""
+    first_line = output.split("\n", 1)[0]
+
+    if "[RETRY_FOCUSED]" in first_line:
+        new_prompt = output.split("\n", 1)[1].strip() if "\n" in output else ""
+        if new_prompt:
+            log(f"[{name}] retry with focused prompt ({len(new_prompt)} chars)")
+            nodes[name].prompt = new_prompt
+            results[name] = NodeResult()  # reset to PENDING
+        else:
+            log(f"[{name}] RETRY_FOCUSED but no new prompt, keeping failed")
+    elif "[SKIP]" in first_line:
+        log(f"[{name}] context node skipped by reflection")
+        results[name] = NodeResult(
+            status=Status.SKIPPED,
+            output="skipped by reflection: context not critical")
+    else:
+        log(f"[{name}] reflection gave no actionable tag, keeping failed")
+
+
+# ==== Gate Failure (multi-turn recovery)
 
 def _block_downstream(name: str, nodes, results, blocked):
     """Block all downstream nodes of a failed gate."""
@@ -632,7 +689,9 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
         log("[dry-run mode]")
     log("")
 
-    start_time = time.monotonic()
+    # offset start_time by prior run duration so the clock continues
+    prior_elapsed = sum(r.duration for r in results.values())
+    start_time = time.monotonic() - prior_elapsed
     if _HAS_RICH and sys.stderr.isatty() and not dry_run:
         display = DageDisplay(wf, nodes, results, start_time)
         display.start()
@@ -672,11 +731,12 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                 if not to_run:
                     continue
 
-                # auto-worktree: only for parallel claude nodes that may write files
+                # auto-worktree: only for parallel claude nodes that write files
+                _WT_ROLES = {Role.PRODUCE, Role.GATE}
                 claude_no_wt = [n for n in to_run
                                 if nodes[n].type == NodeType.CLAUDE
                                 and not nodes[n].worktree
-                                and nodes[n].role != Role.CONTEXT]
+                                and nodes[n].role in _WT_ROLES]
                 auto_wt = ({n: f"dage-{n}" for n in claude_no_wt}
                            if len(claude_no_wt) > 1 else {})
                 if auto_wt:
@@ -726,6 +786,10 @@ def run_dag(wf: dict, nodes: dict[str, Node], repo_dir: str,
                                 gate_efforts, cfg, ctx, wf,
                                 run_dir, run_id, repo_dir,
                                 replan_count, rerun_counts)
+                        elif node.role == Role.CONTEXT and r.status == Status.FAILED:
+                            _handle_context_fail(
+                                name, nodes, results, reflected,
+                                wf, run_dir, run_id, repo_dir)
                         elif node.role == Role.GATE and r.status == Status.SUCCESS:
                             gates_passed.append(name)
 
