@@ -52,6 +52,28 @@ The task is fundamentally too complex for a single node or has wrong assumptions
 This node's work is optional or can be compensated by downstream nodes. Safe to skip.
 """
 
+CONTEXT_REFLECT_PROMPT = """A context node completed (exit code 0) but produced no notes output.
+The agent ran but did not write any findings — likely spent all time on tool calls
+(sub-agents, file reads) without synthesizing a text response.
+
+Node: {node_name}
+Original prompt (first 2000 chars):
+{original_prompt}
+
+CCX log (last 3000 chars):
+{ccx_log}
+
+Classify and respond with the tag on the FIRST LINE:
+
+[RETRY_FOCUSED]
+<new prompt that explicitly requires the agent to write its analysis as text output,
+not just run tool calls. Reuse research already done — reference specific files/findings
+from the log above so the agent doesn't repeat the same searches.>
+
+[SKIP]
+The context gathered by upstream nodes is sufficient; this node can be skipped.
+"""
+
 REFLECT_PROMPT = """A gate verification failed. Analyze the root cause and choose the correct recovery.
 
 Gate command:
@@ -162,6 +184,12 @@ ccx prompt writing guide:
     1-3   cap for simple tasks if you want to limit cost
     5-10  cap for moderate tasks
     10+   cap for complex tasks (usually unnecessary with completion signal)
+- timeout: only set for nodes with predictable duration (context, gate, meta, simple produce).
+    Do NOT set timeout on produce nodes that require multi-round iteration (full-coverage
+    analysis, exhaustive code reading, batch processing). These rely on max_runs + completion
+    signal to terminate naturally. A hard timeout kills the process mid-iteration and discards
+    partial work. If a produce prompt says "process all", "full coverage", "do not sample",
+    or "batch N items per round" — omit timeout entirely.
 - For simple info gathering: use `type: shell` with a command instead of ccx.
 - After implementation nodes, always add a shell gate node (cargo test, pytest, make).
 - Claude gates use a verdict protocol: the agent writes GATE_PASS or GATE_FAIL
@@ -180,7 +208,7 @@ Node schema:
       Context from upstream: ${{nodes.upstream.output}}
       Specific tasks: 1. ... 2. ...
     retry: N
-    timeout: "30m" # e.g. 1h, 5m, 30s
+    timeout: "1h" # e.g. 1h, 5m, 30s
     max_runs: 0 # ccx iterations (0=unlimited, completion-signal-driven)
     outputs: ["path/glob"] # required for produce nodes — declares expected artifacts
 """
