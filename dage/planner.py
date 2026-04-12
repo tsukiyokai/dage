@@ -39,7 +39,8 @@ def _generate_yaml(design: str, description: str, skill_ctx: str = "") -> str | 
         "FORBIDDEN in output: backticks, Insight blocks, Chinese text, commentary, markdown fences. "
         "RAW YAML ONLY — nothing before, nothing after."
     )
-    raw = call_claude(gen_prompt, timeout=1800, system=skill_ctx)
+    raw = call_claude(gen_prompt, timeout=1800, system=skill_ctx,
+                      no_tools=True)
     try:
         raw_yaml = extract_yaml(raw)
         parsed = yaml.safe_load(raw_yaml)
